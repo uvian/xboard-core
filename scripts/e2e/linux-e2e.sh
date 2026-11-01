@@ -115,6 +115,7 @@ for i in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PORT_PANEL/api/
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_PANEL/api/v2/server/config")
 [ "$code" = 422 ] && ok "1 无 token → $code（鉴权中间件生效）" || bad "1 无 token 期望 422，实际 $code"
 
+export GOFLAGS=-mod=mod   # 允许 go 自动补齐 go.sum（跨平台依赖）
 # third_party/xray 不入库（.gitignore），CI 里必须先 vendor 再打补丁
 cd "$E2E/core"
 [ -f third_party/xray/go.mod ] || timeout 600 make vendor >"$E2E/logs/vendor.log" 2>&1 || die "make vendor 失败"
