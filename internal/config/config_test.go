@@ -83,3 +83,19 @@ kernel: {xray: true}
 		t.Fatalf("machine 段没解析到：%+v", c.Machine)
 	}
 }
+
+func TestAliasAllowPrivateTargets(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "c.yaml")
+	body := "node:\n  api_host: http://127.0.0.1:8099\n  node_id: 1\n  api_key: k\napi:\n  listen: 127.0.0.1:1\nkernel:\n  xray: true\n  allow_private_targets: true\n"
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !c.Kernel.AllowPrivateTargets {
+		t.Fatal("allow_private_targets 未映射到 Kernel.AllowPrivateTargets")
+	}
+}
