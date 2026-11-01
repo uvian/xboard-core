@@ -230,3 +230,52 @@ sudo bash scripts/e2e/linux-e2e.sh        # 加 --keep 保留上一轮现场
 ```
 
 它做的事：装 PHP 扩展/Redis → 克隆面板并打我们的补丁 → 建 sqlite 库并跑迁移 → 造夹具（token/用户/节点）→ 起面板 + 起节点 → 起源站与 xray 客户端 → 跑真实流量 → 断言 u/d 增长 → 回读面板 cache 的 `LAST_CHECK_AT/LOAD_STATUS/METRICS` → 未知 UUID 被拒 → WS 推送（有 pcntl 才测）。失败自动 `tail` 全部日志。
+
+### 8.2 Linux 端到端实测结果（GitHub Actions ubuntu-latest，2026-11-01）
+
+Windows 上「数据面不通」的根因在 Linux 上一跑就现形，**不是环境问题，是上游 v26 的安全默认**：
+
+> `proxy/freedom: blocked target: tcp:127.0.0.1:8081, blackholing connection for 58s`
+
+上游 `proxy/freedom/freedom.go:160-175 getDefaultFinalRule(inbound)`：当入站协议是 `vless/vmess/trojan/hysteria/wireguard` 或 `shadowsocks*` 时返回 `defaultBlockPrivateRule`（`freedom.go:74-78`，`ip: geodata.GetPrivateIPMatcher()`，action=Block），即 **v26 默认禁止这些入站把流量送到私网/回环目标**（防 SSRF 内网跳板），命中后按 `blockDelay` 随机黑洞 30–90s。纯净上游二进制同样如此，与我们是否打补丁无关。
+
+对应做法：节点侧显式打开 `kernel.allow_private_targets: true`（默认 **关**），它给 freedom 出站加一条 `finalRules: [{action: allow, network: tcp,udp, ip: [127.0.0.0/8, 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10, ::1/128, fc00::/7, fe80::/10]}]`。生产建议保持关闭（真实节点只应连公网），只在本地联调/内网回源时打开。
+
+**14 项断言全绿的实测（run 41306422780）**
+
+```
+PASS 补丁后 PHP 语法（php -l 全库）
+PASS 1 无 token → 422（ServerV2 中间件生效）
+PASS 2.5 WS 就绪（心跳缓存存在 + handshake websocket.enabled=true）
+PASS 3 users 拉取到 1 个用户            PASS 5 内核启动 / 监听 4443
+PASS 5c 上游默认拦截私网目标（freedom defaultBlockPrivateRule 生效）
+PASS 6b 纯净 v26 服务端同样拦截私网目标（证明放行必须显式打开）
+PASS 7 经节点取到源站内容
+PASS 7 traffic 入库 u/d=173,2000401     ← 面板 v2_user 真实扣量
+PASS 8 未知 UUID 被拒（闸门/内核鉴权）
+PASS 10 WS 推送已连上且收到事件（auth.success / sync.config）
+PASS=14 FAIL=0
+```
+
+本轮联调又修掉 4 个真 bug（都是「源码推断觉得没问题、一跑就露」的那类）：
+
+1. **traffic 从没上报过**：`internal/kernel/xray.Node.Stats()` 有实现但全仓无人调用，`traffic.Collector` 一直空转 → 面板 u/d 永远是 0。新增 `internal/kernel/xray/traffic.go` 的 `SampleTraffic()`：读 `user>>>email>>>traffic>>>{uplink,downlink}` 累计值，按 email 保存上次读数做差（内核重启后计数归零，负差值按 0），`internal/kernel/kernel.go` 增加可选接口 `TrafficSampler`，`report()` 每拍先采样再 `Drain()`。
+2. **WS 连上即被 close**：面板只给 `ws://host:8076`，Workerman 的 `NodeWorker::onWebSocketConnect` 从 **query** 取 `token` + `node_id`（机器模式 `machine_id`），不拼参数直接 `close()`。`handshake()` 里新增 `withAuth()` 用 `net/url` 追加鉴权参数。
+3. **上报节奏被 WS 兜底拖慢**：WS 在线时轮询退成 300s 兜底，但原代码连 `reportTick` 一起 reset，导致上报变成 150s 一拍，面板会以为节点数据停了。改为上报 ticker 只跟面板 `pull_interval` 走（`reportEvery` 夹在 10s–60s）。
+4. **`allow_private_targets` 配了不生效**：viper 不做下划线折叠，`kernel.allow_private_targets` 没进 `config.aliases`，字段始终 false。补别名 + `internal/config/config_test.go::TestAliasAllowPrivateTargets`。
+
+顺带记录两个**上游面板事实**（写进契约文档，避免以后重复踩）：
+
+- `app/Services/ServerService.php:99-102` 的可用用户查询用的是 `->orWhere('expired_at', NULL)`（**不是 `orWhereNull`**），生成 `expired_at = NULL` 永不匹配 → 只要用户的 `expired_at` 为空，节点就永远拉不到这个用户（`users=0`，所有连接被拒）。夹具里必须给 `expired_at` 一个未来时间戳；生产上「永不过期」的用户需要留意这一点（节点侧已加 `users==0` 的 WARN 提示）。
+- 面板 `XboardUpdate::handle()` 只跑 `migrate --force` + 插件/缓存刷新，不改源码；`v2_server.protocol_settings` 是 JSON 列，所以面板补丁只需加 schema 常量即可，**零迁移、零数据改写**（已在 Linux 上 `php -l` 全库验证补丁语法）。
+
+### 8.3 复现方式
+
+```bash
+# 本地 Linux / WSL
+sudo bash scripts/e2e/linux-e2e.sh            # --keep 保留现场
+# CI
+gh workflow run e2e.yml --repo uvian/xboard-core
+```
+
+首次跑要 `make vendor` + 全量编译 vendored Xray-core（~5–8 分钟），之后基线约 4–5 分钟。
