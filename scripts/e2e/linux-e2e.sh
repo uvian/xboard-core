@@ -53,7 +53,7 @@ if command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq php-cli php-sqlite3 php-mbstring php-xml php-curl php-zip \
-      php-redis php-bcmath php-pcntl unzip curl sqlite3 redis-server git ca-certificates >/dev/null || die "apt 安装失败"
+      php-redis php-bcmath unzip curl sqlite3 redis-server git ca-certificates >/dev/null     || die "apt 安装失败（pcntl 已内建在 php-cli，不是独立包）"
   systemctl enable --now redis-server >/dev/null 2>&1 || (redis-server --daemonize yes && sleep 1)
 fi
 for c in php composer git curl sqlite3; do command -v "$c" >/dev/null || die "缺 $c"; done
