@@ -74,12 +74,14 @@ say "2. 面板：环境与建库"
 mkdir -p bootstrap/cache storage/framework/{cache,sessions,views} storage/logs
 [ -f .env ] || cp .env.example .env
 php artisan key:generate --force >/dev/null
-sed -i "s|^DB_CONNECTION=.*|DB_CONNECTION=sqlite|; s|^DB_DATABASE=.*|DB_DATABASE=$E2E/panel/e2e.sqlite|" .env
+# 必须用相对文件名：Laravel 的 sqlite 驱动会自己拼 database_path()，
+# 传绝对路径会被再拼一次，变成 <app>/<abs path>（Windows 与 Actions 上都踩过）。
+sed -i "s|^DB_CONNECTION=.*|DB_CONNECTION=sqlite|; s|^DB_DATABASE=.*|DB_DATABASE=e2e.sqlite|" .env
 grep -q '^REDIS_CLIENT=' .env && sed -i 's|^REDIS_CLIENT=.*|REDIS_CLIENT=predis|' .env || echo 'REDIS_CLIENT=predis' >> .env
 sed -i 's|^CACHE_STORE=.*|CACHE_STORE=redis|; s|^CACHE_DRIVER=.*|CACHE_DRIVER=redis|' .env
 sed -i 's|^QUEUE_CONNECTION=.*|QUEUE_CONNECTION=sync|' .env
 grep -q '^INSTALLED=' .env && sed -i 's|^INSTALLED=.*|INSTALLED=true|' .env || echo 'INSTALLED=true' >> .env
-: > "$E2E/panel/e2e.sqlite"
+: > database/e2e.sqlite
 php artisan migrate --force >"$E2E/logs/migrate.log" 2>&1 || die "迁移失败"
 
 say "3. 夹具：token / 用户 / 节点"
