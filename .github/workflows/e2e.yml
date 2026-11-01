@@ -1,0 +1,55 @@
+name: e2e
+
+# 端到端联调放在 GitHub Actions 的 ubuntu runner 上跑：
+#   - 真面板（cedar2025/Xboard master + 我们的补丁）
+#   - 真节点（xboard-core）
+#   - 真客户端 + 真流量（xray 客户端 → 节点 → 源站）
+# 这样既不需要公网服务器，也绕开了 Windows 本机回环被拦截的问题。
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/e2e/**"
+      - ".github/workflows/e2e.yml"
+      - "internal/**"
+      - "cmd/**"
+      - "third_party/xray/patches/**"
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache: true
+
+      - name: 准备日志目录
+        run: mkdir -p "$RUNNER_TEMP/e2e-logs"
+
+      - name: 跑端到端联调
+        env:
+          E2E: ${{ runner.temp }}/xboard-e2e
+        run: |
+          set -o pipefail
+          sudo --preserve-env=E2E,GITHUB_WORKSPACE bash scripts/e2e/linux-e2e.sh 2>&1 | tee "$RUNNER_TEMP/e2e-logs/main.log"
+
+      - name: 汇总现场
+        if: always()
+        run: |
+          echo "=== 断言结果 ==="
+          grep -aE "PASS|FAIL|SKIP|全部通过|有失败项" "$RUNNER_TEMP/e2e-logs/main.log" | sed 's/\x1b\[[0-9;]*m//g' || true
+          echo "=== 面板侧 u/d 与 cache ==="
+          grep -aE "面板 u/d|SERVER_VLESS" "$RUNNER_TEMP/e2e-logs/main.log" | sed 's/\x1b\[[0-9;]*m//g' || true
+
+      - name: 上传日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs
+          path: ${{ runner.temp }}/xboard-e2e/logs
+          if-no-files-found: warn
+          retention-days: 7
