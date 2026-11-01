@@ -249,8 +249,13 @@ say "6. 真实流量 → 面板 u/d"
 got=$(curl -sS --max-time 15 --socks5 127.0.0.1:"$PORT_SOCKS" "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
 echo "$got" | grep -q hello-e2e && ok "7 经节点取到源站内容" || { bad "7 数据面不通"; dump; }
 curl -s --max-time 20 --socks5 127.0.0.1:"$PORT_SOCKS" -o /dev/null "http://127.0.0.1:$PORT_ORIGIN/blob.bin" || true
-sleep 35   # 等一拍 report
-UD=$(cd "$E2E/panel" && php -r 'require "vendor/autoload.php"; $a=require "bootstrap/app.php"; $a->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); $u=App\Models\User::find('"$USER_ID"'); echo $u->u.",".$u->d;')
+# 上报节奏 = max(10s, pull/2)(WS 在线也不退坡),最多等 90s 让它跑完两拍。
+UD="0,0"
+for _ in $(seq 1 18); do
+  sleep 5
+  UD=$(cd "$E2E/panel" && php -r 'require "vendor/autoload.php"; $a=require "bootstrap/app.php"; $a->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); $u=App\Models\User::find('"$USER_ID"'); echo $u->u.",".$u->d;')
+  [ "$UD" != "0,0" ] && break
+done
 echo "  面板 u/d = $UD"
 [ "$UD" != "0,0" ] && ok "7 traffic 入库 u/d=$UD" || bad "7 traffic 没入库"
 
