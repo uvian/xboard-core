@@ -1,0 +1,127 @@
+diff --git a/app/Http/Requests/Admin/ServerSave.php b/app/Http/Requests/Admin/ServerSave.php
+index ac5b957..c6f98ae 100644
+--- a/app/Http/Requests/Admin/ServerSave.php
++++ b/app/Http/Requests/Admin/ServerSave.php
+@@ -39,6 +39,14 @@ class ServerSave extends FormRequest
+         'reality_settings.public_key' => 'nullable|string',
+         'reality_settings.private_key' => 'nullable|string',
+         'reality_settings.short_id' => 'nullable|string',
++        'reality_settings.dest' => 'nullable|string',
++        'reality_settings.server_names' => 'nullable|array',
++        'reality_settings.short_ids' => 'nullable|array',
++        'reality_settings.mldsa65_seed' => 'nullable|string|size:43',
++        'reality_settings.xver' => 'nullable|integer|in:0,1,2',
++        'reality_settings.max_time_diff' => 'nullable|integer|min:0',
++        'reality_settings.min_client_ver' => ['nullable', 'string', 'regex:/^\d{1,3}(\.\d{1,3}){2}$/'],
++        'reality_settings.max_client_ver' => ['nullable', 'string', 'regex:/^\d{1,3}(\.\d{1,3}){2}$/'],
+     ];
+ 
+     private const PROTOCOL_RULES = [
+@@ -236,6 +244,13 @@ class ServerSave extends FormRequest
+             $rules['protocol_settings.' . $field] = $rule;
+         }
+ 
++        // 可选收紧：Xray-core v26 已删除 h2/http/h3/quic 传输，
++        // 这里只在显式开启 xboard.strict_transport 时于保存阶段拦下，
++        // 默认关闭 —— 保证升级本身不改动任何既有节点数据。
++        if (config('xboard.strict_transport', false) && in_array($type, ['vmess', 'trojan', 'vless'], true)) {
++            $rules['protocol_settings.network'] = 'required|string|in:tcp,ws,grpc,httpupgrade,xhttp,splithttp';
++        }
++
+         return $rules;
+     }
+ 
+@@ -291,6 +306,7 @@ class ServerSave extends FormRequest
+             'rate.numeric' => '倍率格式不正确',
+             'network.required' => '传输协议不能为空',
+             'network.in' => '传输协议格式不正确',
++            'protocol_settings.network.in' => '该传输已被 Xray-core v26 移除（h2/http/h3/quic），请改用 xhttp 或 splithttp',
+             'networkSettings.array' => '传输协议配置有误',
+             'ruleSettings.array' => '规则配置有误',
+             'tlsSettings.array' => 'tls配置有误',
+diff --git a/app/Models/Server.php b/app/Models/Server.php
+index c65754d..55b748e 100644
+--- a/app/Models/Server.php
++++ b/app/Models/Server.php
+@@ -167,6 +167,16 @@ class Server extends Model
+                 'private_key' => ['type' => 'string', 'default' => null],
+                 'short_id' => ['type' => 'string', 'default' => null],
+                 'allow_insecure' => ['type' => 'boolean', 'default' => false],
++                // 以下字段为 xboard-core 后端（Xray-core v26）补齐，默认 null/0，
++                // 旧节点读出来与改动前完全一致，不会因为缺键而改变行为。
++                'dest' => ['type' => 'string', 'default' => null],
++                'server_names' => ['type' => 'array', 'default' => null],
++                'short_ids' => ['type' => 'array', 'default' => null],
++                'mldsa65_seed' => ['type' => 'string', 'default' => null],
++                'xver' => ['type' => 'integer', 'default' => 0],
++                'max_time_diff' => ['type' => 'integer', 'default' => null],
++                'min_client_ver' => ['type' => 'string', 'default' => null],
++                'max_client_ver' => ['type' => 'string', 'default' => null],
+             ]
+         ]
+     ];
+diff --git a/app/Services/ServerService.php b/app/Services/ServerService.php
+index 1271b92..1a1413b 100644
+--- a/app/Services/ServerService.php
++++ b/app/Services/ServerService.php
+@@ -288,7 +288,7 @@ class ServerService
+                 'multiplex' => data_get($protocolSettings, 'multiplex'),
+                 'tls' => (int) $protocolSettings['tls'],
+                 'tls_settings' => match ((int) $protocolSettings['tls']) {
+-                        2 => $protocolSettings['reality_settings'],
++                        2 => self::realityConfig($protocolSettings),
+                         default => $protocolSettings['tls_settings'],
+                     },
+             ],
+@@ -301,7 +301,7 @@ class ServerService
+                     default => null,
+                 },
+                 'tls_settings' => match ((int) $protocolSettings['tls']) {
+-                        2 => $protocolSettings['reality_settings'],
++                        2 => self::realityConfig($protocolSettings),
+                         default => $protocolSettings['tls_settings'],
+                     },
+                 'multiplex' => data_get($protocolSettings, 'multiplex'),
+@@ -396,6 +396,42 @@ class ServerService
+         return $response;
+     }
+ 
++    /**
++     * 把面板里的 reality_settings 归一成节点后端消费的形状。
++     *
++     * 为什么要单独一步：DB 里存的是 snake_case（short_id / mldsa65_seed / min_client_ver），
++     * 而 Xray-core 的 REALITY 配置是 camelCase（shortIds / mldsa65Seed / minClientVer）。
++     * 以前直接整对象透传，导致后端只能改名猜字段。
++     *
++     * 关键约定：minClientVer / maxClientVer 默认是 null（= 不限制）。
++     * 一旦下发 26.x，所有自报 1.8.2 的 mihomo 系客户端（Clash Verge Rev / FlClash /
++     * OpenWrt-nikki）都会被 REALITY 静默回落成"连普通 TLS 站"，现象是握手失败而非报错。
++     */
++    private static function realityConfig(array $protocolSettings): array
++    {
++        $reality = data_get($protocolSettings, 'reality_settings') ?? [];
++        if (! is_array($reality)) {
++            $reality = [];
++        }
++
++        return [
++            'show' => false,
++            'dest' => $reality['dest'] ?? null,
++            'server_name' => $reality['server_name'] ?? null,
++            'server_names' => $reality['server_names'] ?? null,
++            'server_port' => $reality['server_port'] ?? null,
++            'public_key' => $reality['public_key'] ?? null,
++            'private_key' => $reality['private_key'] ?? null,
++            'short_id' => $reality['short_id'] ?? null,
++            'short_ids' => $reality['short_ids'] ?? null,
++            'mldsa65Seed' => $reality['mldsa65_seed'] ?? null,
++            'xver' => (string) (int) ($reality['xver'] ?? 0),
++            'maxTimeDiff' => $reality['max_time_diff'] ?? null,
++            'minClientVer' => $reality['min_client_ver'] ?? null,
++            'maxClientVer' => $reality['max_client_ver'] ?? null,
++        ];
++    }
++
+     /**
+      * 根据协议类型和标识获取服务器
+      * @param int $serverId

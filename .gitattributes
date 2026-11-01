@@ -1,0 +1,9 @@
+# 统一换行：脚本与补丁必须是 LF，否则 Linux/CI 上 sh 与 patch 会失败
+* text=auto eol=lf
+*.sh text eol=lf
+*.patch text eol=lf
+Makefile text eol=lf
+*.go text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.yaml text eol=lf

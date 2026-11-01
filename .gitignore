@@ -1,0 +1,16 @@
+# 构建产物
+/bin/
+
+# vendored 的 Xray-core 不入库：由 `make vendor` + `scripts/apply-patches.sh` 重现，
+# 只保留补丁与说明，避免把上游 8MB 源码塞进历史。
+/third_party/xray/*
+!/third_party/xray/README.md
+!/third_party/xray/patches/
+
+# 本地配置与凭据
+/config.yaml
+/credentials*
+
+# 编辑器 / 系统
+.DS_Store
+*.swp

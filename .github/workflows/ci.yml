@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+
+      - name: vendor Xray-core + apply patches
+        run: make vendor
+
+      - name: gofmt (fail on diff)
+        run: |
+          out=$(gofmt -l . | grep -v '^third_party/' || true)
+          if [ -n "$out" ]; then echo "$out"; exit 1; fi
+
+      - name: vet
+        run: go vet ./...
+
+      - name: test
+        run: go test ./...
+
+      - name: upstream dispatcher tests (补丁不能破坏数据面)
+        run: cd third_party/xray && go test ./app/dispatcher/... ./app/usergate/...
+
+      - name: build
+        run: make build
+
+      - name: patch series still applies to declared baseline
+        run: make verify

@@ -1,0 +1,27 @@
+Log:
+  Level: info
+
+# 单机单节点模式
+Node:
+  ApiHost: https://panel.example.com
+  NodeID: 1
+  ApiKey: "<server_token>"
+  Timeout: 15
+  Retry: 3
+  PullEvery: 60
+
+# 机器模式（一台机器带多个节点）：把 Node 段留空，启用这一段
+Machine:
+  Enabled: false
+  ApiHost: https://panel.example.com
+  MachineID: 1
+  Token: "<server_token>"
+  NodeIDs: [1, 2, 3]
+
+API:
+  Listen: 127.0.0.1:8090   # 只监听本机；对外抓取请走反代 + 鉴权
+  Metrics: true
+
+Kernel:
+  Xray: true       # vless/vmess/trojan/ss2022 + REALITY + xhttp
+  Singbox: false   # anytls/tuic/hysteria2（M1 接入）
