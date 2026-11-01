@@ -96,3 +96,41 @@ php -l app/Http/Requests/Admin/ServerSave.php
 2. `reality_settings.server_port` 面板发的是 **integer**，后端原先是 `string` → 整包 unmarshal 失败，
    症状是"节点启动不了"。已改为 `FlexInt`（同时吃 `1` / `"1"` / `null`），`xver` 同理。
 3. `maxTimeDiff` 面板填秒、上游要纳秒 → 不做换算时填 60 等于 60ns，**时间差校验静默失效**。
+
+---
+
+## 5. 两轮独立复核的结论（2026-11-01）
+
+由两个独立复核 Agent 分别按「面板契约符合性」与「安全默认 + 补丁可维护性」逐行核对源码，结论：
+
+**已修（本轮代码里）**
+
+| # | 问题 | 后果 |
+| --- | --- | --- |
+| 1 | `minClientVer` 只看主版本（`majorVersion>=26`） | `1.26.10` / `2.0.0` 会被放行，而它们逐段大于 mihomo 自报的 (1,8,2) → 所有 mihomo 客户端静默回落 dest。已改 `atLeast(v,1,8,2)` 逐段比较，并加回归用例 |
+| 2 | REST 错误直接 `%w` 包 `*url.Error` | `Error()` 打印完整 URL（含 `?token=`），被 slog 原样落盘。已加 `redact()` |
+| 3 | 机器模式只发 `machine_id` | 面板 V2 中间件除 handshake 外 `node_id` 必填 → config/user/report 全 422。已改为一节点一 runner，同时带两个参数 |
+| 4 | users 的 304 覆盖了 ETag | 面板 304 不带 ETag → 隔轮全量拉取。已改为只在 200 时更新 |
+| 5 | `base_config.pull_interval` 解析后不用 | 面板改节奏要重启节点。已接到 runner 的 ticker（下限 15s） |
+| 6 | 闸门灌入晚于内核 Start/Reload | 窗口内新连接全吃 `ErrUnknownUser`（用户侧"刚切节点就断流"）。已反转顺序 |
+| 7 | `bucketFor` 命中路径提前 return | 老用户长期在线时限速桶永不回收（上界=历史用户数×2）。已把清扫移到命中判断之前 |
+| 8 | `GateRejects` 无递增点 | 指标恒为 0。已加 `gate.OnReject` 钩子 |
+| 9 | `API.Listen` 不校验 | 空值 → `Addr=""` → bind 0.0.0.0:80 且 `/metrics` 无鉴权。已拒绝空值 |
+| 10 | `allow_insecure` 静默丢弃 | 运维以为放宽了校验其实没生效。已改为构建期报错 |
+| 11 | Makefile `$(MAKE) patches \| tail -1` | 吞掉补丁失败，`verify` 仍报 ok。已去掉管道 |
+
+**已确认无绕过**
+
+- MPTCP：唯一 inbound 路径无条件 `SocketConfig{TcpMptcp:false}`，ws/grpc/httpupgrade/xhttp 共用同一份 `sc`；全仓无 raw JSON 直通（`buildInbound` 只放协议 settings，outbound 只放 freedom/blackhole）→ CVE-2026-98432 的触发面在内核侧已关闭。
+- 补丁资源：`Dispatch`/`DispatchLink` 两条失败路径都 `usergate.Close()`；`rateReader` 实现了 `TimeoutReader` 且 `Limit` 在断言之前。
+- 补丁面积极小：只改上游 `app/dispatcher/default.go` +14/−0，冲突点 `default.go:287-294` 与 `:349-355`。
+
+**仍未做（已知、明确）**
+
+1. `Admit` 对空 `email` 放行 —— 匿名入站（socks/http）没有身份可比，这是设计约束；**副作用**：vless 的 `fallbacks` 转发进来的连接不带 email，会绕过设备数/限速。
+2. WS `sync.*` 客户端未实现（`main.go:handshake` 只探测），配置/用户变动仍靠 ≤60s 轮询。
+3. 机器模式的 `sync.nodes`、`sync.devices` 事件未消费。
+4. `metrics.ActiveConns` 无递增点（当前恒 0，`report` 里改用在线数）。
+5. ECH 只解析不使用。
+6. PHP 侧补丁未 `php -l`，也未与真实面板联调。
+
