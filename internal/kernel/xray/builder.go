@@ -35,7 +35,7 @@ func Build(node *panel.NodeConfig, users []panel.UserInfo) (*core.Config, error)
 	}
 	return &core.Config{
 		App: []*serial.TypedMessage{
-			serial.ToTypedMessage(logConfig("")),
+			serial.ToTypedMessage(logConfig(logLevel)),
 			serial.ToTypedMessage(&proxyman.InboundConfig{}),
 			serial.ToTypedMessage(&proxyman.OutboundConfig{}),
 			serial.ToTypedMessage(policyConfig()),

@@ -12,6 +12,16 @@ import (
 //
 // 节点是常驻进程，access log 会随连接数线性增长，把磁盘写满比丢日志危险得多；
 // 需要排障时把配置里的 log.level 调到 debug（main.go 透传）。
+// logLevel 由进程启动时按配置设定（SetLogLevel）。默认 warning：生产环境不该把每条连接都打出来。
+var logLevel = "warning"
+
+// SetLogLevel 设置 xray 内核日志级别（debug/info/warning/error）。空值保持默认。
+func SetLogLevel(level string) {
+	if level != "" {
+		logLevel = level
+	}
+}
+
 func logConfig(level string) *applog.Config {
 	if level == "" {
 		level = "warning"

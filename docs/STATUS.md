@@ -176,3 +176,36 @@ xray 上游没有 anytls/tuic/hysteria2（只有 wyx2685 fork 有）。我们按
 没有等价注入点 → **这三类协议上闸门不生效**，进程启动时会对每个节点打一条 WARN。
 需要设备数/限速的节点请用 vless/vmess/trojan/ss2022（xray 侧）。
 
+
+## 8. 端到端联调（Windows 本机，2026-11-01）
+
+本机没有 WSL（`wsl.exe -l -v` 报未安装，装它要管理员+重启），因此用原生 Windows 栈搭了一套**真面板**：
+
+- 便携 PHP 8.4.27 NTS（`D:\DSH\_tools\php`）+ composer 2.11 + `predis` + SQLite + 本机 Redis；
+- 面板：`cedar2025/Xboard` master `e68fec5` 全新克隆，`git apply` 我们的补丁 **CLEAN**，`find app -name '*.php' | xargs php -l` 零语法错误；
+- 面板服务：`php artisan serve --host=127.0.0.1 --port=8099`；节点：`xboard-core.exe -config config.yaml` 直连。
+
+**已实测通过**
+
+| 项 | 证据 |
+| --- | --- |
+| V2 鉴权 | 无 token 请求 `/api/v2/server/config` → 422（`ServerV2` 中间件生效） |
+| config 扁平契约 | 节点按 `protocol/network/networkSettings/tls_settings/server_port` 建出 inbound；面板侧 `protocol_settings` 白名单投射可见 |
+| users `{users:[...]}` | 节点日志 `users=1`，metrics 回读 `total_users=1` |
+| ETag/304 | 第二轮拉取走 304，未重复全量 |
+| 内核启动 | `kernel started kernel=xray protocol=vless tag=node-1 network=tcp port=4443 users=1`，`netstat` 见 `0.0.0.0:4443 LISTENING` |
+| **report 五合一** | 面板 cache 回读 `SERVER_VLESS_LAST_CHECK_AT_1`、`SERVER_VLESS_LOAD_STATUS_1`（含 `kernel_status:true`）、`SERVER_VLESS_METRICS_1`（`uptime/goroutines/total_users`）全部落库 |
+| 节点负载 | `LOAD_STATUS` 里出现真实数值（CPU%、内存、磁盘），不再是占位 |
+
+**E2E 才发现并已修的真 bug**
+
+1. `xray: build instance: common: *proxyman.InboundConfig is not registered` —— 只 import 数据类型不会注册处理器，补 `internal/kernel/xray/distro.go` 空导入 `main/distro/all`；
+2. xray 日志级别被 `logConfig("")` 写死，补 `xray.SetLogLevel(cfg.Log.Level)`；
+3. 面板挂 PHP-FPM/nginx 时 keep-alive 复用会吃 RST（`wsarecv: An existing connection was forcibly closed`），resty 自带重试不覆盖，`internal/panel/client.go` 新增连接层重试 + 命中后转短连接；
+4. Windows 上 `sysinfo` 原来返回占位值（内存 1 字节），新增 `internal/sysinfo/sysinfo_windows.go`，直接调 kernel32/psapi 取 CPU/内存/提交量/磁盘。
+
+**未通过 / 受限（如实记录）**
+
+- **数据面**：经本节点（vless:4443）与上游纯净二进制（v26.10.31 `a4a3dff`、v26.9.30）分别测 vless/vmess/ss2022，客户端 socks 入口均失败：vless 报 `failed to decode response header > unexpected response version. Expecting 0 but actually 72`（72='H'），vmess/ss2022 超时；同一客户端二进制的**纯 socks 入站**正常（`socks:200`）。服务端从未出现 `accepted tcp:...` 的 dispatch 日志。→ 判定为**本机 Windows 环境**（回环 + 本地安全软件/代理拦截）导致，与 usergate 补丁无关，需在 Linux 上复验。
+- **WS 推送**：面板侧 Workerman 需要 `ext-pcntl`，Windows 版 PHP 没有，`ws-server` 起不来；`sync.*` 事件只能到 Linux 上联调。
+- 设备数闸门、限速、traffic（u/d）入库：都依赖真实流量，随之顺延到 Linux。

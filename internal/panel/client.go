@@ -32,6 +32,8 @@ type Client struct {
 	machid string
 	http   *resty.Client
 
+	kaOnce sync.Once
+
 	mu       sync.RWMutex
 	nodeETag string
 	userETag string
@@ -64,6 +66,63 @@ func (c *Client) query() map[string]string {
 
 // Tag 是内部分桶键：xray inbound tag、gate 的 tag、日志都用它。
 // 面板不下发 tag，用节点 ID 派生即可稳定唯一。
+// 面板常挂在 nginx + PHP-FPM 后面，keep-alive 空闲超时后服务端会直接发 RST，
+// 客户端复用这条连接就会拿到 "wsarecv: An existing connection was forcibly closed"。
+// resty 自带的 RetryCount 只覆盖 5xx 与连接建立失败，不覆盖"连接复用到一半被对端重置"，
+// 所以这里显式做一次连接层重试：识别出重置 → 关掉空闲连接 → 后续改走短连接。
+func (c *Client) do(ctx context.Context, method, path string, prep func(*resty.Request) *resty.Request) (*resty.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		req := prep(c.http.R().SetContext(ctx).SetQueryParams(c.query()))
+		var r *resty.Response
+		if method == http.MethodGet {
+			r, lastErr = req.Get(c.base + path)
+		} else {
+			r, lastErr = req.Post(c.base + path)
+		}
+		if lastErr == nil {
+			return r, nil
+		}
+		if !isConnReset(lastErr) {
+			return nil, lastErr
+		}
+		c.disableKeepAlive()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 150 * time.Millisecond):
+		}
+	}
+	return nil, lastErr
+}
+
+// isConnReset 判断是不是"连接层"错误（值得换一条新连接重试），而不是业务层错误。
+func isConnReset(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, k := range []string{
+		"forcibly closed", "wsarecv", "connection reset", "econnreset",
+		"server closed idle connection", "unexpected eof", "broken pipe", "eof",
+	} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// disableKeepAlive 关掉池里的空闲连接，并让后续请求不再复用（幂等）。
+func (c *Client) disableKeepAlive() {
+	c.kaOnce.Do(func() {
+		if tr, ok := c.http.GetClient().Transport.(*http.Transport); ok {
+			tr.DisableKeepAlives = true
+		}
+	})
+	c.http.GetClient().CloseIdleConnections()
+}
+
 func (c *Client) Tag() string {
 	if c.machid != "" {
 		return "machine-" + c.machid
@@ -74,12 +133,9 @@ func (c *Client) Tag() string {
 // Config 拉节点配置。第二个返回值表示「配置真的变了」（面板 304 -> false）。
 // ETag 命中 304 时返回缓存副本，调用方据此跳过重建内核——这是节点进程最贵的操作。
 func (c *Client) Config(ctx context.Context) (*NodeConfig, bool, error) {
-	r, err := c.http.R().
-		SetContext(ctx).
-		SetQueryParams(c.query()).
-		SetHeader("If-None-Match", c.etag()).
-		ForceContentType("application/json").
-		Get(c.base + "/api/v2/server/config")
+	r, err := c.do(ctx, http.MethodGet, "/api/v2/server/config", func(req *resty.Request) *resty.Request {
+		return req.SetHeader("If-None-Match", c.etag()).ForceContentType("application/json")
+	})
 	if err != nil {
 		return nil, false, fmt.Errorf("GET config: %w", redact(err))
 	}
@@ -127,13 +183,11 @@ func (c *Client) AdoptConfig(raw []byte) (*NodeConfig, error) {
 // 早期社区后端用的 msgpack 头部在 PHP 侧没有任何读取点。这里发 Accept 而非伪造头，
 // 解码仍按响应 Content-Type 分派，将来面板真上 msgpack 也不用改代码。
 func (c *Client) Users(ctx context.Context) ([]UserInfo, error) {
-	r, err := c.http.R().
-		SetContext(ctx).
-		SetQueryParams(c.query()).
-		SetHeader("If-None-Match", c.etagUser()).
-		SetHeader("Accept", "application/x-msgpack, application/json").
-		SetDoNotParseResponse(true).
-		Get(c.base + "/api/v2/server/user")
+	r, err := c.do(ctx, http.MethodGet, "/api/v2/server/user", func(req *resty.Request) *resty.Request {
+		return req.SetHeader("If-None-Match", c.etagUser()).
+			SetHeader("Accept", "application/x-msgpack, application/json").
+			SetDoNotParseResponse(true)
+	})
 	if err != nil {
 		return nil, fmt.Errorf("GET user: %w", redact(err))
 	}
@@ -177,11 +231,9 @@ func (c *Client) Report(ctx context.Context, rep *Report) error {
 	if len(rep.Traffic) == 0 && len(rep.Alive) == 0 && len(rep.Online) == 0 && rep.Status == nil {
 		return nil
 	}
-	r, err := c.http.R().
-		SetContext(ctx).
-		SetQueryParams(c.query()).
-		SetBody(rep).
-		Post(c.base + "/api/v2/server/report")
+	r, err := c.do(ctx, http.MethodPost, "/api/v2/server/report", func(req *resty.Request) *resty.Request {
+		return req.SetBody(rep)
+	})
 	if err != nil {
 		return fmt.Errorf("POST report: %w", redact(err))
 	}
@@ -194,10 +246,9 @@ func (c *Client) Report(ctx context.Context, rep *Report) error {
 // Handshake 拿 WS 推送通道。面板侧要求 server_ws_enable 打开且 NodeWorker 心跳存在，
 // 否则 websocket.enabled=false —— 此时退回纯轮询，功能不受影响。
 func (c *Client) Handshake(ctx context.Context) (*Handshake, error) {
-	r, err := c.http.R().
-		SetContext(ctx).
-		SetQueryParams(c.query()).
-		Get(c.base + "/api/v2/server/handshake")
+	r, err := c.do(ctx, http.MethodGet, "/api/v2/server/handshake", func(req *resty.Request) *resty.Request {
+		return req
+	})
 	if err != nil {
 		return nil, fmt.Errorf("handshake: %w", redact(err))
 	}
