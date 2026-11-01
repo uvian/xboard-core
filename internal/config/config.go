@@ -58,6 +58,10 @@ type KernelConf struct {
 	// SingboxBinary / SingboxDir：sing-box 走子进程（不是库），这两个是它的可执行文件与工作目录。
 	SingboxBinary string `mapstructure:"SingboxBinary"`
 	SingboxDir    string `mapstructure:"SingboxDir"`
+	// AllowPrivateTargets 放行「客户端 → 节点 → 内网/回环」这类目标。
+	// 默认 false：xray v26 的 freedom 出站对 vless/vmess/trojan/ss 入站内置了禁止私网目标的规则，
+	// 这也是防 SSRF 的最后一道闸；确实需要访问内网（自建监控、内网 API）再打开。
+	AllowPrivateTargets bool `mapstructure:"AllowPrivateTargets"`
 }
 
 func defaults() *Conf {

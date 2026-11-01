@@ -59,3 +59,11 @@ func second(d time.Duration) *policy.Second {
 	v := uint32((d + time.Second - 1) / time.Second)
 	return &policy.Second{Value: v}
 }
+
+// allowPrivateTargets 打开后，freedom 出站允许连私网/回环目标。
+// 默认关闭：xray v26 对 vless/vmess/trojan/shadowsocks 入站内置了「禁止私网」的
+// finalRule（防 SSRF / 防内网跳板），节点默认沿用这个安全姿势。
+var allowPrivateTargets bool
+
+// SetAllowPrivateTargets 由配置决定是否放行私网目标。
+func SetAllowPrivateTargets(v bool) { allowPrivateTargets = v }

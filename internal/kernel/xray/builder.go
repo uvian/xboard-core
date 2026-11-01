@@ -29,7 +29,7 @@ func Build(node *panel.NodeConfig, users []panel.UserInfo) (*core.Config, error)
 	if err != nil {
 		return nil, err
 	}
-	outbound, err := buildOutbounds()
+	outbound, err := buildOutbounds(allowPrivateTargets)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +171,38 @@ func buildShadowsocks(n *panel.NodeConfig, users []panel.UserInfo) (map[string]a
 
 // buildOutbounds 只放必要项：默认直出 + block。
 // 出站不做策略精调——节点是服务端，路由交给面板的 routes/custom_routes（M3）。
-func buildOutbounds() ([]*core.OutboundHandlerConfig, error) {
+//
+// 唯一例外是 finalRules：xray v26 的 freedom 对 vless/vmess/trojan/shadowsocks
+// 等入站默认套一条「禁止私网目标」的规则（proxy/freedom/freedom.go getDefaultFinalRule），
+// 目的是防止节点被当成内网跳板。需要访问内网的运维必须显式允许。
+// privateTargets 覆盖 freedom 的内置私网拦截规则所覆盖的地址段。
+// 用显式 CIDR 而不是 "geoip:private"：上游的私网匹配器是代码里的常量，
+// 没有暴露成可引用的 matcher 名字，写名字只会得到 "failed to load IP" 之类的错误。
+var privateTargets = []string{
+	"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+	"169.254.0.0/16", "100.64.0.0/10",
+	"::1/128", "fc00::/7", "fe80::/10",
+}
+
+// freedomSettings 返回 freedom 的 settings JSON。
+// allowPrivate 为真时插一条 action=allow 的 finalRule：finalRules 在默认规则之前
+// 被匹配（matchFinalRule 先遍历 h.finalRules 再落到 defaultRule），所以这条会把
+// 内置的「禁止私网」遮掉；这也是上游唯一留出的放行口子。
+func freedomSettings(allowPrivate bool) string {
+	if !allowPrivate {
+		return `{}`
+	}
+	b, _ := json.Marshal(map[string]any{
+		"finalRules": []map[string]any{{
+			"action":  "allow",
+			"network": "tcp,udp",
+			"ip":      privateTargets,
+		}},
+	})
+	return string(b)
+}
+
+func buildOutbounds(allowPrivate bool) ([]*core.OutboundHandlerConfig, error) {
 	// freedom 的 domainStrategy 在 v26 已迁到 sockopt.domainStrategy；写在 freedom 里会告警并被自动迁移。
 	out := make([]*core.OutboundHandlerConfig, 0, 2)
 	for _, spec := range []struct {
@@ -180,7 +211,7 @@ func buildOutbounds() ([]*core.OutboundHandlerConfig, error) {
 		settings string
 		sockopt  *conf.SocketConfig
 	}{
-		{tag: "direct", protocol: "freedom", settings: `{}`, sockopt: &conf.SocketConfig{DomainStrategy: "UseIP"}},
+		{tag: "direct", protocol: "freedom", settings: freedomSettings(allowPrivate), sockopt: &conf.SocketConfig{DomainStrategy: "UseIP"}},
 		{tag: "block", protocol: "blackhole", settings: `{}`},
 	} {
 		raw := json.RawMessage(spec.settings)

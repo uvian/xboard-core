@@ -46,6 +46,7 @@ func run() error {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level(cfg.Log.Level)})))
 	xray.SetLogLevel(cfg.Log.Level)
+	xray.SetAllowPrivateTargets(cfg.Kernel.AllowPrivateTargets)
 
 	// 纵深防御：MPTCP 是 CVE-2026-98432 的触发面。vendored 的 v26.10.31 在
 	// DefaultListener 里已经 SetMultipathTCP(false)，这里再确保运行时层也被兜住。

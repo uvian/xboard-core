@@ -167,3 +167,24 @@ func TestBuildUnknownProtocol(t *testing.T) {
 		t.Fatalf("want protocol rejection, got %v", err)
 	}
 }
+
+// v26 的 freedom 对 vless 等入站默认禁止私网目标；只有显式打开才放行。
+func TestFreedomBlocksPrivateByDefault(t *testing.T) {
+	if got := freedomSettings(false); strings.Contains(got, "finalRules") {
+		t.Fatalf("默认不应该写 finalRules，实际: %s", got)
+	}
+	if _, err := buildOutbounds(false); err != nil {
+		t.Fatalf("默认出站应能构建: %v", err)
+	}
+}
+
+func TestFreedomAllowsPrivateWhenEnabled(t *testing.T) {
+	got := freedomSettings(true)
+	if !strings.Contains(got, "finalRules") || !strings.Contains(got, "127.0.0.0/8") {
+		t.Fatalf("打开后应写入 allow 规则，实际: %s", got)
+	}
+	// 必须真的能被 conf 解析，否则只是拼对了字符串。
+	if _, err := buildOutbounds(true); err != nil {
+		t.Fatalf("allow 规则没被上游接受: %v", err)
+	}
+}

@@ -135,7 +135,7 @@ node:
   retry: 3
   pull_every: 30
 api: {listen: 127.0.0.1:8091, metrics: true}
-kernel: {xray: true, singbox: false}
+kernel: {xray: true, singbox: false, allow_private_targets: true}
 YAML
 ( cd "$E2E/node" && nohup "$E2E/bin/xboard-core" -config config.yaml >"$E2E/logs/node.log" 2>&1 & )
 for i in $(seq 1 40); do grep -q 'kernel started' "$E2E/logs/node.log" && break; sleep 0.5; done
@@ -205,7 +205,13 @@ if [ -x "$E2E/bin/xray-pristine" ]; then
   sleep 2
   p2=$(curl -sS --max-time 10 --socks5 127.0.0.1:$PCLI "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
   echo "  纯净二进制结果: ${p2:-<empty>}"
-  echo "$p2" | grep -q hello-e2e && ok "5c 纯净二进制全链路通" || bad "5c 纯净二进制也不通（环境限制）"
+  if echo "$p2" | grep -q hello-e2e; then
+    bad "5c 纯净二进制竟然通了（说明私网目标没被拦）"
+  elif grep -q "blocked target" "$E2E/logs/stock2.log"; then
+    ok "5c 上游默认拦截私网目标（freedom defaultBlockPrivateRule 生效）"
+  else
+    bad "5c 纯净二进制失败原因不是私网拦截，需另查"
+  fi
   grep -aiE "dialing|accepted|Failed" "$E2E/logs/stock2.log" | tail -3
 else
   bad "5c 纯净二进制没编出来"
