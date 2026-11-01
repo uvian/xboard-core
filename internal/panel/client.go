@@ -45,18 +45,17 @@ func New(base string, nodeID int, token string, timeout time.Duration) *Client {
 }
 
 // NewMachine 返回机器模式客户端（一个 token 带多个节点）。
-func NewMachine(base, machineID, token string, timeout time.Duration) *Client {
+func NewMachine(base, machineID string, nodeID int, token string, timeout time.Duration) *Client {
 	c := New(base, 0, token, timeout)
 	c.machid = machineID
 	return c
 }
 
 func (c *Client) query() map[string]string {
-	q := map[string]string{"token": c.token}
+	// 面板 V2 中间件除 handshake 外都要求 node_id；machine_id 只是额外的机器身份。
+	q := map[string]string{"token": c.token, "node_id": strconv.Itoa(c.node)}
 	if c.machid != "" {
 		q["machine_id"] = c.machid
-	} else {
-		q["node_id"] = strconv.Itoa(c.node)
 	}
 	return q
 }
@@ -106,12 +105,16 @@ func (c *Client) Config(ctx context.Context) (*NodeConfig, bool, error) {
 }
 
 // Users 拉可用用户。返回 nil, nil 表示 304（没变）。
+//
+// 面板 master 的 user() 直接 response($response)，并不看 X-Response-Format；
+// 早期社区后端用的 msgpack 头部在 PHP 侧没有任何读取点。这里发 Accept 而非伪造头，
+// 解码仍按响应 Content-Type 分派，将来面板真上 msgpack 也不用改代码。
 func (c *Client) Users(ctx context.Context) ([]UserInfo, error) {
 	r, err := c.http.R().
 		SetContext(ctx).
 		SetQueryParams(c.query()).
 		SetHeader("If-None-Match", c.etagUser()).
-		SetHeader("X-Response-Format", "msgpack").
+		SetHeader("Accept", "application/x-msgpack, application/json").
 		SetDoNotParseResponse(true).
 		Get(c.base + "/api/v2/server/user")
 	if err != nil {
@@ -122,16 +125,18 @@ func (c *Client) Users(ctx context.Context) ([]UserInfo, error) {
 	}
 	defer r.RawResponse.Body.Close()
 
-	c.mu.Lock()
-	c.userETag = r.Header().Get("Etag")
-	c.mu.Unlock()
-
 	switch r.StatusCode() {
 	case http.StatusNotModified:
+		// 304 响应不带 ETag；这里必须保留旧值，否则下一轮会全量拉取。
 		return nil, nil
 	case http.StatusOK:
 	default:
 		return nil, fmt.Errorf("user: status %d", r.StatusCode())
+	}
+	if et := r.Header().Get("Etag"); et != "" {
+		c.mu.Lock()
+		c.userETag = et
+		c.mu.Unlock()
 	}
 
 	// 面板只在 Accept 到位时才回 msgpack；这里两种都吃。

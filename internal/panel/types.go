@@ -54,6 +54,14 @@ type NodeConfig struct {
 	Congestion      string          `json:"congestion_control"`
 	ZeroRTT         bool            `json:"zero_rtt_handshake"`
 	PaddingScheme   json.RawMessage `json:"padding_scheme"`
+	// 以下六项 xray 内核不用，但面板对 hysteria/tuic/mieru 会下发；
+	// 留字段是为了将来切 sing-box 内核时不用再改契约层（见 docs/STATUS.md M2）。
+	Host            string          `json:"host"`
+	Version         int             `json:"version"`
+	AuthTimeout     string          `json:"auth_timeout"`
+	Heartbeat       string          `json:"heartbeat"`
+	Transport       string          `json:"transport"`
+	TrafficPattern  string          `json:"traffic_pattern"`
 	CertConfig      *CertConfig     `json:"cert_config"`
 	Routes          []Route         `json:"routes"`
 	CustomOutbounds json.RawMessage `json:"custom_outbounds"`
@@ -139,7 +147,9 @@ type TLSSettings struct {
 	Provider         string            `json:"provider"`
 	DNSEnv           map[string]string `json:"dns_env"`
 	RejectUnknownSNI bool              `json:"reject_unknown_sni"`
-	AllowInsecure    bool              `json:"allow_insecure"`
+	// ECH：面板 TLS_SETTINGS_CONFIGURATION 里有 ech 开关，启用后走这里。
+	ECH           bool `json:"ech"`
+	AllowInsecure bool `json:"allow_insecure"`
 }
 
 // CertConfig 来自 ServerService.php:384-392 追加的 cert_config，
@@ -230,6 +240,8 @@ type LoadStatus struct {
 	Mem  Usage   `json:"mem"`
 	Swap Usage   `json:"swap"`
 	Disk Usage   `json:"disk"`
+	// KernelStatus 与 Metrics.KernelStatus 同义；面板 processStatus 读的是 status 顶层这个键。
+	KernelStatus bool `json:"kernel_status"`
 }
 
 type Usage struct {

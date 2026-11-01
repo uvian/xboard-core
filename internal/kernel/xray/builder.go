@@ -130,6 +130,9 @@ func buildVLESS(n *panel.NodeConfig, users []panel.UserInfo) (map[string]any, er
 	}, nil
 }
 
+// buildVMess：注意面板 master 的 vmess 分支只下发 tls/tls_settings/multiplex，
+// 根本没有 cipher 键（ServerService.php 的 vmess 组装 + Server.php 的 schema 都没有），
+// 所以 n.Cipher 恒为空、security 走 0（auto）。保留读取是为了兼容自建面板的旧下发。
 func buildVMess(n *panel.NodeConfig, users []panel.UserInfo) (map[string]any, error) {
 	clients := make([]any, 0, len(users))
 	for _, u := range users {

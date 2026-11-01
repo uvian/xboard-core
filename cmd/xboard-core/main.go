@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -51,23 +52,17 @@ func run() error {
 
 	g := gate.New()
 	mx := metrics.New()
-	counter := traffic.NewCollector()
-
-	var client *panel.Client
+	// 机器模式下的 token 是"机器"身份，但面板 V2 每个请求仍要 node_id，
+	// 所以一个机器管 N 个节点 = N 条独立 runner（各自 tag / 计数器 / 内核实例）。
+	var runners []*runner
 	if cfg.Machine.Enabled {
-		client = panel.NewMachine(cfg.Machine.APIHost, fmt.Sprint(cfg.Machine.MachineID), cfg.Machine.Token, cfg.Timeout())
+		for _, nid := range cfg.Machine.NodeIDs {
+			c := panel.NewMachine(cfg.Machine.APIHost, fmt.Sprint(cfg.Machine.MachineID), nid, cfg.Machine.Token, cfg.Timeout())
+			runners = append(runners, newRunner(cfg, c, g, mx))
+		}
 	} else {
-		client = panel.New(cfg.Node.APIHost, cfg.Node.NodeID, cfg.Node.APIKey, cfg.Timeout())
-	}
-
-	r := &runner{
-		cfg:      cfg,
-		client:   client,
-		registry: kernel.NewRegistry(xray.NewNode(g)),
-		gate:     g,
-		traffic:  counter,
-		metrics:  mx,
-		since:    time.Now(),
+		c := panel.New(cfg.Node.APIHost, cfg.Node.NodeID, cfg.Node.APIKey, cfg.Timeout())
+		runners = append(runners, newRunner(cfg, c, g, mx))
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -85,8 +80,37 @@ func run() error {
 	}()
 	defer srv.Shutdown(context.Background())
 
-	r.handshake(ctx)
-	return r.loop(ctx)
+	for _, r := range runners {
+		r.handshake(ctx)
+	}
+
+	errs := make(chan error, len(runners))
+	for _, r := range runners {
+		r := r
+		go func() { errs <- r.loop(ctx) }()
+	}
+	var first error
+	for range runners {
+		if err := <-errs; err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// newRunner 每个节点一条：独立的内核实例、流量计数器与标签。
+func newRunner(cfg *config.Conf, c *panel.Client, g *gate.Gate, mx *metrics.Registry) *runner {
+	return &runner{
+		cfg:      cfg,
+		client:   c,
+		registry: kernel.NewRegistry(xray.NewNode(g)),
+		gate:     g,
+		traffic:  traffic.NewCollector(),
+		metrics:  mx,
+		since:    time.Now(),
+		pull:     time.Duration(cfg.Node.PullEvery) * time.Second,
+		resched:  make(chan time.Duration, 1),
+	}
 }
 
 type runner struct {
@@ -101,8 +125,10 @@ type runner struct {
 	kernel kernel.Kernel
 	users  []panel.UserInfo
 	since  time.Time
+	pull   time.Duration
 
-	wsConnected bool
+	// resched 让面板下发的 base_config.pull_interval 能改本地节奏（面板改配置不用重启节点）。
+	resched chan time.Duration
 }
 
 // handshake 只用来判断面板是否开了 WS 推送。开与不开都走轮询，不影响正确性：
@@ -121,13 +147,15 @@ func (r *runner) handshake(ctx context.Context) {
 }
 
 func (r *runner) loop(ctx context.Context) error {
-	every := time.Duration(r.cfg.Node.PullEvery) * time.Second
-	tick := time.NewTicker(every)
+	if r.pull <= 0 {
+		r.pull = 60 * time.Second
+	}
+	tick := time.NewTicker(r.pull)
 	defer tick.Stop()
-	reportTick := time.NewTicker(reportEvery(every))
+	reportTick := time.NewTicker(reportEvery(r.pull))
 	defer reportTick.Stop()
 
-	if err := r.pull(ctx); err != nil {
+	if err := r.pullOnce(ctx); err != nil {
 		slog.Warn("initial pull failed", "err", err)
 	}
 	for {
@@ -138,10 +166,15 @@ func (r *runner) loop(ctx context.Context) error {
 			}
 			return nil
 		case <-tick.C:
-			if err := r.pull(ctx); err != nil {
+			if err := r.pullOnce(ctx); err != nil {
 				slog.Error("pull", "err", err)
 				r.metrics.ReloadErrors.Add(1)
 			}
+		case every := <-r.resched:
+			r.pull = every
+			tick.Reset(every)
+			reportTick.Reset(reportEvery(every))
+			slog.Info("pull interval updated by panel", "every", every.String())
 		case <-reportTick.C:
 			if err := r.report(ctx); err != nil {
 				slog.Warn("report", "err", err)
@@ -160,7 +193,7 @@ func reportEvery(pull time.Duration) time.Duration {
 }
 
 // pull 拉配置与用户，按需 启动 / 重建 / 热更用户。
-func (r *runner) pull(ctx context.Context) error {
+func (r *runner) pullOnce(ctx context.Context) error {
 	node, changed, err := r.client.Config(ctx)
 	if err != nil {
 		return fmt.Errorf("config: %w", err)
@@ -173,6 +206,8 @@ func (r *runner) pull(ctx context.Context) error {
 		// 304：面板说用户没变，沿用本地快照。
 		users = r.users
 	}
+	r.applyPanelIntervals(node)
+
 	if !changed && r.kernel != nil && sameUsers(r.users, users) {
 		return nil
 	}
@@ -222,24 +257,65 @@ func (r *runner) pull(ctx context.Context) error {
 	return nil
 }
 
+// applyPanelIntervals 采信面板下发的 pull_interval（管理员改面板即可改节点节奏），
+// 下限 15s：面板默认 60，但填 1 会把面板打爆。push_interval 只影响上报，这里跟随。
+func (r *runner) applyPanelIntervals(node *panel.NodeConfig) {
+	if node == nil || node.BaseConfig == nil {
+		return
+	}
+	sec, ok := toInt(node.BaseConfig.PullInterval)
+	if !ok || sec <= 0 {
+		return
+	}
+	want := time.Duration(sec) * time.Second
+	if want < 15*time.Second {
+		want = 15 * time.Second
+	}
+	if want == r.pull {
+		return
+	}
+	select {
+	case r.resched <- want:
+	default:
+	}
+}
+
+// toInt 兼容面板把间隔下发成数字或字符串两种写法。
+func toInt(v any) (int, bool) {
+	switch x := v.(type) {
+	case float64:
+		return int(x), true
+	case int:
+		return x, true
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		return n, err == nil
+	default:
+		return 0, false
+	}
+}
+
 // report 一次上报带全部四类数据（V2 的 report 就是为此设计的：一个 RTT）。
 func (r *runner) report(ctx context.Context) error {
 	if r.kernel == nil || r.node == nil {
 		return nil
 	}
+	online := r.gate.Online(r.node.Tag)
 	rep := &panel.Report{
 		Traffic: r.traffic.Drain(),
-		Alive:   aliveMap(r.gate.Online(r.node.Tag)),
-		Online:  onlineCount(r.gate.Online(r.node.Tag)),
+		// 面板 processAlive 会给每个 uid 写一次 Redis；只报"有设备数限制"的用户即可，
+		// 因为 alivelist（踢人/在线设备面板）只查 device_limit > 0 的人。
+		Alive:  aliveMap(limitedOnly(online, r.users)),
+		Online: onlineCount(online),
 	}
 	if l, err := sysinfo.Stat(); err == nil {
 		rep.Status = &panel.LoadStatus{
-			CPU:  l.CPUPercent,
-			Mem:  panel.Usage{Total: l.MemTotal, Used: l.MemUsed},
-			Swap: panel.Usage{Total: l.SwapTotal, Used: l.SwapUsed},
-			Disk: panel.Usage{Total: l.DiskTotal, Used: l.DiskUsed},
+			CPU:          l.CPUPercent,
+			Mem:          panel.Usage{Total: l.MemTotal, Used: l.MemUsed},
+			Swap:         panel.Usage{Total: l.SwapTotal, Used: l.SwapUsed},
+			Disk:         panel.Usage{Total: l.DiskTotal, Used: l.DiskUsed},
+			KernelStatus: r.kernel != nil,
 		}
-		_ = l
 	} else {
 		slog.Warn("sysinfo unavailable; status will be skipped", "err", err)
 	}
@@ -305,6 +381,29 @@ func nodeUpMbps(n *panel.NodeConfig) int {
 		return 0
 	}
 	return n.UpMbps
+}
+
+// limitedOnly 过滤出「面板设置了 device_limit」的用户，减少 alive 上报的写放大。
+func limitedOnly(online []gate.Online, users []panel.UserInfo) []gate.Online {
+	if len(online) == 0 {
+		return online
+	}
+	limited := make(map[int]struct{}, len(users))
+	for _, u := range users {
+		if u.DeviceLimit > 0 {
+			limited[u.ID] = struct{}{}
+		}
+	}
+	if len(limited) == 0 {
+		return nil
+	}
+	out := online[:0]
+	for _, o := range online {
+		if _, ok := limited[o.UID]; ok {
+			out = append(out, o)
+		}
+	}
+	return out
 }
 
 func aliveMap(online []gate.Online) map[int][]string {

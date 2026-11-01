@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -57,8 +58,11 @@ func xboardStub(t *testing.T) *httptest.Server {
 	})
 
 	mux.HandleFunc("/api/v2/server/user", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Response-Format") != "msgpack" {
-			t.Errorf("user request must ask for msgpack, got %q", r.Header.Get("X-Response-Format"))
+		if !strings.Contains(r.Header.Get("Accept"), "msgpack") {
+			t.Errorf("user request should accept msgpack, got %q", r.Header.Get("Accept"))
+		}
+		if r.URL.Query().Get("node_id") != "7" {
+			t.Errorf("node_id must always be sent, got %q", r.URL.Query().Get("node_id"))
 		}
 		if r.Header.Get("If-None-Match") != "" {
 			w.WriteHeader(http.StatusNotModified)
@@ -79,8 +83,8 @@ func xboardStub(t *testing.T) *httptest.Server {
 	})
 
 	mux.HandleFunc("/api/v2/server/handshake", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("node_id") != "" {
-			t.Errorf("handshake must not carry node_id")
+		if r.URL.Query().Get("token") != "s3cret" {
+			t.Errorf("handshake must carry token")
 		}
 		_, _ = w.Write([]byte(`{"websocket":{"enabled":true,"ws_url":"wss://panel.example.com/ws"}}`))
 	})
@@ -130,6 +134,26 @@ func TestConfigFlatContract(t *testing.T) {
 	}
 	if node2 != node {
 		t.Fatal("304 must return the cached node")
+	}
+}
+
+// 304 不带 ETag：客户端必须保留旧值，否则隔轮全量拉取。
+func TestUsersKeepsETagOn304(t *testing.T) {
+	srv := xboardStub(t)
+	c := New(srv.URL, 7, "s3cret", 5*time.Second)
+	ctx := context.Background()
+	if _, err := c.Users(ctx); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	before := c.etagUser()
+	if before == "" {
+		t.Fatal("etag not stored after 200")
+	}
+	if _, err := c.Users(ctx); err != nil { // 服务端看到 If-None-Match 即回 304
+		t.Fatalf("second: %v", err)
+	}
+	if c.etagUser() != before {
+		t.Fatalf("304 wiped etag: %q -> %q", before, c.etagUser())
 	}
 }
 
@@ -194,7 +218,7 @@ func TestReportShape(t *testing.T) {
 
 func TestHandshakeMachineMode(t *testing.T) {
 	srv := xboardStub(t)
-	c := NewMachine(srv.URL, "m-1", "s3cret", 5*time.Second)
+	c := NewMachine(srv.URL, "m-1", 7, "s3cret", 5*time.Second)
 	h, err := c.Handshake(context.Background())
 	if err != nil {
 		t.Fatalf("handshake: %v", err)
