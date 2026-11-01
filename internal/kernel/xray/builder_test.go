@@ -124,6 +124,40 @@ func TestBuildAcceptsLegacyMinClientVer(t *testing.T) {
 	}
 }
 
+// "1.26.10" 逐段比较大于 (1,8,2)，只看主版本会把它当 1.x 放行 → 所有 mihomo 客户端被打回 dest。
+func TestBuildRejectsSneakyMinClientVer(t *testing.T) {
+	for _, v := range []string{"1.26.10", "2.0.0", "26.3.27"} {
+		n := realityNode(t)
+		b, _ := json.Marshal(map[string]any{
+			"private_key":  testPrivKey,
+			"server_names": []string{"example.com"},
+			"short_ids":    []string{"0123abcd"},
+			"dest":         "example.com:443",
+			"minClientVer": v,
+		})
+		n.TLSSettings = b
+		if _, err := Build(n, users()); err == nil {
+			t.Fatalf("minClientVer=%s 应该被拒（它 >= mihomo 自报的 1.8.2）", v)
+		}
+	}
+}
+
+// allow_insecure 在 v26 已移除：面板老表单还带着时必须报错而不是静默丢弃。
+func TestBuildRejectsAllowInsecure(t *testing.T) {
+	n := &panel.NodeConfig{
+		Protocol:    "vless",
+		ListenIP:    "0.0.0.0",
+		ServerPort:  8443,
+		Network:     "tcp",
+		TLS:         panel.SecurityTLS,
+		TLSSettings: json.RawMessage(`{"allow_insecure":true,"cert_file":"/c.pem","key_file":"/k.pem"}`),
+		Tag:         "node-1",
+	}
+	if _, err := Build(n, users()); err == nil || !strings.Contains(err.Error(), "allow_insecure") {
+		t.Fatalf("want allow_insecure rejection, got %v", err)
+	}
+}
+
 // 非 xray 处理的协议（anytls/tuic/hysteria2 归 sing-box）必须明确报错。
 func TestBuildUnknownProtocol(t *testing.T) {
 	n := realityNode(t)

@@ -3,6 +3,7 @@ package xray
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/xboard-ng/xboard-core/internal/panel"
@@ -133,6 +134,11 @@ func buildTLS(node *panel.NodeConfig) (*conf.TLSConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("xray: 解析 tls_settings: %w", err)
 	}
+	// allow_insecure 是客户端语义，v26 已从服务端配置移除（上游直接 PrintRemovedFeatureError）。
+	// 面板老表单可能还留着这个开关，显式报错比静默忽略安全：否则运维以为"放宽了校验"其实没生效。
+	if ts.AllowInsecure {
+		return nil, fmt.Errorf("xray: allow_insecure 在 v26 已被移除，请改用 pinnedPeerCertSha256 / verifyPeerCertByName")
+	}
 	certFile, keyFile := ts.CertFile, ts.KeyFile
 	if cc := node.CertConfig; cc != nil {
 		if cc.CertFile != "" {
@@ -177,7 +183,7 @@ func buildReality(node *panel.NodeConfig) (*conf.REALITYConfig, error) {
 		return nil, fmt.Errorf("xray: REALITY 缺少 short_id/short_ids")
 	}
 	if v := rs.MinClientVer; v != "" {
-		if major, ok := majorVersion(v); ok && major >= 26 {
+		if atLeast(v, 1, 8, 2) > 0 {
 			return nil, fmt.Errorf("xray: minClientVer=%s 会拒绝所有 mihomo 系客户端（它们自报 1.8.2），"+
 				"请在面板里清空或设为 1.0.0", v)
 		}
@@ -212,6 +218,32 @@ func buildReality(node *panel.NodeConfig) (*conf.REALITYConfig, error) {
 		MinClientVer: rs.MinClientVer,
 		MaxClientVer: rs.MaxClientVer,
 	}, nil
+}
+
+// atLeast 逐段比较 v 与 want(a,b,c)，返回 -1 / 0 / 1。
+//
+// 必须逐段比而不是只看主版本：上游 transport_security.go 把 minClientVer 解析成 3 个字节，
+// 再与客户端 ClientHello 里的 (x,y,z) 逐字节比较。所以 "1.26.10" 主版本是 1，实际却大于
+// mihomo 自报的 (1,8,2) —— 用主版本判断会放行一个必杀配置。
+func atLeast(v string, want ...int) int {
+	parts := strings.Split(strings.TrimSpace(v), ".")
+	got := make([]int, 3)
+	for i := 0; i < 3 && i < len(parts); i++ {
+		n, err := strconv.Atoi(strings.TrimSpace(parts[i]))
+		if err != nil {
+			return 0 // 解析不了就当没设：宁可放宽，也不误杀客户端
+		}
+		got[i] = n
+	}
+	for i := 0; i < 3; i++ {
+		if got[i] != want[i] {
+			if got[i] > want[i] {
+				return 1
+			}
+			return -1
+		}
+	}
+	return 0
 }
 
 // majorVersion 从 "26.3.27" 里取主版本号，格式不对就当没写（交给上游判）。

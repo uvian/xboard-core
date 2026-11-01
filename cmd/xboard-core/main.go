@@ -47,11 +47,14 @@ func run() error {
 	// 纵深防御：MPTCP 是 CVE-2026-98432 的触发面。vendored 的 v26.10.31 在
 	// DefaultListener 里已经 SetMultipathTCP(false)，这里再确保运行时层也被兜住。
 	if v, ok := os.LookupEnv("GODEBUG"); !ok || !strings.Contains(v, "multipathtcp=0") {
-		slog.Warn("GODEBUG lacks multipathtcp=0; socket-level SetMultipathTCP(false) still applies", "GODEBUG", v)
+		// v26.10.31 的 DefaultListener 已经 SetMultipathTCP(false)，这一层只是纵深防御，
+		// 所以用 Info：默认出现 WARN 会让人以为配置错了（见 docs/STATUS.md §5）。
+		slog.Info("GODEBUG lacks multipathtcp=0; socket-level SetMultipathTCP(false) still applies", "GODEBUG", v)
 	}
 
 	g := gate.New()
 	mx := metrics.New()
+	g.OnReject(func(error) { mx.GateRejects.Add(1) })
 	// 机器模式下的 token 是"机器"身份，但面板 V2 每个请求仍要 node_id，
 	// 所以一个机器管 N 个节点 = N 条独立 runner（各自 tag / 计数器 / 内核实例）。
 	var runners []*runner
@@ -220,35 +223,39 @@ func (r *runner) pullOnce(ctx context.Context) error {
 
 	switch {
 	case r.kernel == nil:
+		// 先把用户灌进闸门再起内核：反过来的话，配置就绪到 LoadUsers 之间的新连接
+		// 会全部命中 ErrUnknownUser（用户侧表现为"刚切节点就断流"）。
+		r.gate.SetNodeLimit(node.Tag, nodeUpMbps(node))
+		r.gate.LoadUsers(node.Tag, toGateUsers(users))
 		if err := k.Start(ctx, node, users); err != nil {
 			return err
 		}
 		r.kernel, r.node, r.users = k, node, users
-		r.gate.LoadUsers(node.Tag, toGateUsers(users))
-		r.gate.SetNodeLimit(node.Tag, nodeUpMbps(node))
 		r.metrics.Users.Store(int64(len(users)))
 		slog.Info("kernel started", "kernel", k.Name(), "protocol", node.Protocol,
 			"tag", node.Tag, "network", node.Network, "port", node.ServerPort, "users", len(users))
 
 	case finger(r.node) != finger(node):
 		r.metrics.Reloads.Add(1)
+		// 同上：闸门先就绪，再切内核。
+		r.gate.SetNodeLimit(node.Tag, nodeUpMbps(node))
+		r.gate.LoadUsers(node.Tag, toGateUsers(users))
 		if err := k.Reload(ctx, node); err != nil {
 			return err
 		}
 		r.node = node
 		r.users = users
 		r.metrics.KernelRestarts.Add(1)
-		r.gate.SetNodeLimit(node.Tag, nodeUpMbps(node))
-		r.gate.LoadUsers(node.Tag, toGateUsers(users))
 		slog.Info("kernel reloaded", "tag", node.Tag, "network", node.Network, "port", node.ServerPort)
 
 	default:
 		added, deleted, modified := diff(r.users, users)
 		if len(added)+len(deleted)+len(modified) > 0 {
+			// 先更新闸门再更新内核：新增用户可以立刻接入，被删用户在两次调用之间就被拒。
+			r.gate.UpdateUser(node.Tag, toGateUsers(added), toGateUsers(deleted), toGateUsers(modified))
 			if err := k.UpdateUsers(ctx, added, deleted, modified); err != nil {
 				return err
 			}
-			r.gate.UpdateUser(node.Tag, toGateUsers(added), toGateUsers(deleted), toGateUsers(modified))
 			r.users = users
 			r.metrics.Users.Store(int64(len(users)))
 			slog.Info("users updated", "added", len(added), "deleted", len(deleted), "modified", len(modified))

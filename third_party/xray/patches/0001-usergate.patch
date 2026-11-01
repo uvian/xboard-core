@@ -39,10 +39,10 @@ index cae9735..7b426c0 100644
  		d.routedDispatch(ctx, outbound, destination)
 diff --git a/app/usergate/usergate.go b/app/usergate/usergate.go
 new file mode 100644
-index 0000000..d77529a
+index 0000000..c405544
 --- /dev/null
 +++ b/app/usergate/usergate.go
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,312 @@
 +// Package usergate 是节点后端注入「设备数 + 每用户限速」的唯一挂载点。
 +//
 +// 为什么这样挂：Xboard-Node 用 //go:linkname 劫持 common.typeCreatorRegistry
@@ -133,7 +133,9 @@ index 0000000..d77529a
 +	}
 +	id := identify(ctx)
 +	if id.Email == "" {
-+		// 匿名协议（socks/http 无账号）：设备数无意义，放行。
++		// 匿名协议（socks/http 无账号）没有身份可比，只能放行——这是设计约束，
++		// 不是疏忽：要卡这类入站得在入站层做认证。副作用是 vless 的 fallbacks
++		// 转发进来的连接不带 email，也会走到这里；启用 fallbacks 前请确认这个语义可接受。
 +		return nil
 +	}
 +	return g.Admit(ctx, id.Tag, id.Email, id.IP)
@@ -259,27 +261,36 @@ index 0000000..d77529a
 +func bucketFor(key string, rate int64) *bucket {
 +	bucketsMu.Lock()
 +	defer bucketsMu.Unlock()
++	// 清扫放在命中判断之前：否则老用户一直在线（命中路径提前 return）时桶永远不回收。
++	sweepLocked()
 +	if b, ok := buckets[key]; ok && int64(b.rate) == rate {
 +		return b
 +	}
 +	b := newBucket(rate)
 +	buckets[key] = b
-+	if now := time.Now().Unix(); now-lastSweep.Load() > 600 {
-+		lastSweep.Store(now)
-+		// 只清理明显过期的桶：太久没被取用过（last 早于 10 分钟前）。
-+		for k, v := range buckets {
-+			v.mu.Lock()
-+			idle := time.Since(v.last) > 10*time.Minute
-+			v.mu.Unlock()
-+			if idle {
-+				delete(buckets, k)
-+			}
-+		}
-+	}
 +	return b
 +}
 +
-+// Forget 在用户被删除时调用，释放其桶（节点进程热更用户时用）。
++// sweepLocked 每 10 分钟回收一次空闲桶。调用方必须持有 bucketsMu。
++// 上界是「最近 10 分钟活跃过的用户数 × 2（上下行）」，不会随历史用户数增长。
++func sweepLocked() {
++	now := time.Now().Unix()
++	if now-lastSweep.Load() <= 600 {
++		return
++	}
++	lastSweep.Store(now)
++	for k, v := range buckets {
++		v.mu.Lock()
++		idle := time.Since(v.last) > 10*time.Minute
++		v.mu.Unlock()
++		if idle {
++			delete(buckets, k)
++		}
++	}
++}
++
++// Forget 立即释放某用户的所有桶（用户被删除/限速归零时调用；即使不调用，
++// sweepLocked 也会在 10 分钟内回收，这里只是为了立刻生效）。
 +func Forget(tag, email string) {
 +	prefix := tag + "|" + email + "|"
 +	bucketsMu.Lock()

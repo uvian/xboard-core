@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -84,6 +85,10 @@ func Load(path string) (*Conf, error) {
 }
 
 func (c *Conf) validate() error {
+	if strings.TrimSpace(c.API.Listen) == "" {
+		// 空 Addr 在 net/http 里等于 ":http"（0.0.0.0:80），而 /metrics 没有鉴权。
+		return fmt.Errorf("API.Listen must not be empty (default 127.0.0.1:8090)")
+	}
 	if c.Machine.Enabled {
 		if c.Machine.APIHost == "" || c.Machine.Token == "" {
 			return fmt.Errorf("Machine.Enabled requires ApiHost and Token")

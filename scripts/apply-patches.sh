@@ -18,7 +18,11 @@ patches=("${XDIR}"/patches/*.patch)
 for p in "${patches[@]}"; do
   name="$(basename "$p")"
   if patch -p1 -d "${XDIR}" --forward --dry-run <"$p" >/dev/null 2>&1; then
-    patch -p1 -d "${XDIR}" --forward --no-backup-if-mismatch <"$p" >/dev/null
+    if ! patch -p1 -d "${XDIR}" --forward --no-backup-if-mismatch <"$p" >/dev/null; then
+      echo "FAILED: $name 应用失败（上游结构已变？）" >&2
+      echo "  下一步：在 third_party/xray 里手工合并，再用 git 生成新补丁覆盖 patches/$name" >&2
+      exit 2
+    fi
     echo "applied  ${name}"
   elif patch -p1 -d "${XDIR}" --forward --dry-run --reverse <"$p" >/dev/null 2>&1; then
     echo "skipped  ${name} (already applied)"

@@ -39,6 +39,9 @@ type Gate struct {
 	sweepT time.Duration
 	stop   chan struct{}
 	once   sync.Once
+
+	// onReject 在拒绝连接时回调（metrics 计数用），可为 nil。
+	onReject func(err error)
 }
 
 type nodeLimits struct {
@@ -64,6 +67,24 @@ func New() *Gate {
 }
 
 // SetNodeLimit 设置节点级限速（Mbps）。
+// OnReject 注册拒绝回调。只应设置一次（main 启动时），不做并发保护。
+func (g *Gate) OnReject(fn func(error)) { g.onReject = fn }
+
+// rejectHeld 是 Admit 内的版本：Admit 已持锁，这里只做回调，不再取锁。
+func (g *Gate) rejectHeld(err error) error {
+	if g.onReject != nil {
+		g.onReject(err)
+	}
+	return err
+}
+
+func (g *Gate) reject(err error) error {
+	if g.onReject != nil {
+		g.onReject(err)
+	}
+	return err
+}
+
 func (g *Gate) SetNodeLimit(tag string, mbps int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -130,7 +151,7 @@ func (g *Gate) Admit(ctx context.Context, tag, email, ip string) error {
 
 	st, ok := g.users[key(tag, email)]
 	if !ok {
-		return ErrUnknownUser
+		return g.rejectHeld(ErrUnknownUser)
 	}
 	now := time.Now()
 	g.seenAt[key(tag, email)] = now
@@ -153,7 +174,7 @@ func (g *Gate) Admit(ctx context.Context, tag, email, ip string) error {
 		live++
 	}
 	if live >= dl {
-		return ErrDeviceLimit
+		return g.rejectHeld(ErrDeviceLimit)
 	}
 	st.ips[ip] = now
 	return nil

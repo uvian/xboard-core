@@ -42,7 +42,7 @@ smoke:
 	go run ./cmd/xboard-core -smoke
 
 verify: lint test build smoke
-	@$(MAKE) patches | tail -1
+	@$(MAKE) patches
 	@echo "verify ok"
 
 clean:

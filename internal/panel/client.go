@@ -3,8 +3,10 @@ package panel
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,7 +81,7 @@ func (c *Client) Config(ctx context.Context) (*NodeConfig, bool, error) {
 		ForceContentType("application/json").
 		Get(c.base + "/api/v2/server/config")
 	if err != nil {
-		return nil, false, fmt.Errorf("GET config: %w", err)
+		return nil, false, fmt.Errorf("GET config: %w", redact(err))
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -118,7 +120,7 @@ func (c *Client) Users(ctx context.Context) ([]UserInfo, error) {
 		SetDoNotParseResponse(true).
 		Get(c.base + "/api/v2/server/user")
 	if err != nil {
-		return nil, fmt.Errorf("GET user: %w", err)
+		return nil, fmt.Errorf("GET user: %w", redact(err))
 	}
 	if r.RawResponse == nil {
 		return nil, fmt.Errorf("user: empty response")
@@ -166,7 +168,7 @@ func (c *Client) Report(ctx context.Context, rep *Report) error {
 		SetBody(rep).
 		Post(c.base + "/api/v2/server/report")
 	if err != nil {
-		return fmt.Errorf("POST report: %w", err)
+		return fmt.Errorf("POST report: %w", redact(err))
 	}
 	if r.StatusCode() != http.StatusOK {
 		return fmt.Errorf("report: status %d body %s", r.StatusCode(), truncate(r.Body(), 256))
@@ -182,7 +184,7 @@ func (c *Client) Handshake(ctx context.Context) (*Handshake, error) {
 		SetQueryParams(c.query()).
 		Get(c.base + "/api/v2/server/handshake")
 	if err != nil {
-		return nil, fmt.Errorf("handshake: %w", err)
+		return nil, fmt.Errorf("handshake: %w", redact(err))
 	}
 	if r.StatusCode() != http.StatusOK {
 		return nil, fmt.Errorf("handshake: status %d body %s", r.StatusCode(), truncate(r.Body(), 256))
@@ -196,6 +198,16 @@ func (c *Client) Handshake(ctx context.Context) (*Handshake, error) {
 
 func (c *Client) etag() string     { c.mu.RLock(); defer c.mu.RUnlock(); return c.nodeETag }
 func (c *Client) etagUser() string { c.mu.RLock(); defer c.mu.RUnlock(); return c.userETag }
+
+// redact 去掉 *url.Error 里的完整 URL（含 ?token=），避免令牌经错误日志外泄。
+// resty 把底层错误包成 *url.Error，它的 Error() 会打印 "Get \"https://…?token=…\": …"。
+func redact(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("%s %s: %w", ue.Op, "<redacted-url>", ue.Err)
+	}
+	return err
+}
 
 func truncate(b []byte, n int) string {
 	if len(b) <= n {
