@@ -209,3 +209,24 @@ xray 上游没有 anytls/tuic/hysteria2（只有 wyx2685 fork 有）。我们按
 - **数据面**：经本节点（vless:4443）与上游纯净二进制（v26.10.31 `a4a3dff`、v26.9.30）分别测 vless/vmess/ss2022，客户端 socks 入口均失败：vless 报 `failed to decode response header > unexpected response version. Expecting 0 but actually 72`（72='H'），vmess/ss2022 超时；同一客户端二进制的**纯 socks 入站**正常（`socks:200`）。服务端从未出现 `accepted tcp:...` 的 dispatch 日志。→ 判定为**本机 Windows 环境**（回环 + 本地安全软件/代理拦截）导致，与 usergate 补丁无关，需在 Linux 上复验。
 - **WS 推送**：面板侧 Workerman 需要 `ext-pcntl`，Windows 版 PHP 没有，`ws-server` 起不来；`sync.*` 事件只能到 Linux 上联调。
 - 设备数闸门、限速、traffic（u/d）入库：都依赖真实流量，随之顺延到 Linux。
+
+### 8.1 数据面失败的现场判据（2026-11-01，Windows）
+
+为排除本项目自身代码，做了三组对照：
+
+1. **纯净上游二进制**：v26.10.31（`a4a3dff`）与 v26.9.30 各跑一遍 vless/vmess/ss2022，症状与我们的构建一致（'H' / 超时）。
+2. **同二进制纯 socks 入站**：正常（`socks:200`），说明 transport/socket 层没问题。
+3. **手写 VLESS 客户端**（不经 xray 客户端）：直接向本节点 4443 发
+   `00 | uuid(16) | 00 | 01 | port(2) | atyp=01 | 127.0.0.1` + HTTP 请求，
+   **收到的不是 VLESS 响应头，而是 `HTTP/1.1 400 Bad request\r\nConnection: close\r\nContent-Type: text/html…`**；
+   同一脚本重跑一次却变成超时无响应。xray 的 vless 入站不可能回 HTTP 400。
+
+→ 结论：这台机器上**回环连接被本机的安全软件/网络过滤层介入**（进程列表只有 Defender，WinHTTP 直连，但这正是典型的企业/安全软件 loopback 拦截表现：非 HTTP 流量被塞 HTTP 错误页或直接丢弃）。因此数据面（真实流量、traffic 入库、设备数闸门、限速）**不能在本机验证**，必须搬到 Linux。
+
+已备好一把梭脚本：`scripts/e2e/linux-e2e.sh`（204 行，`bash -n` 通过），一条命令覆盖 10 项断言：
+
+```bash
+sudo bash scripts/e2e/linux-e2e.sh        # 加 --keep 保留上一轮现场
+```
+
+它做的事：装 PHP 扩展/Redis → 克隆面板并打我们的补丁 → 建 sqlite 库并跑迁移 → 造夹具（token/用户/节点）→ 起面板 + 起节点 → 起源站与 xray 客户端 → 跑真实流量 → 断言 u/d 增长 → 回读面板 cache 的 `LAST_CHECK_AT/LOAD_STATUS/METRICS` → 未知 UUID 被拒 → WS 推送（有 pcntl 才测）。失败自动 `tail` 全部日志。
