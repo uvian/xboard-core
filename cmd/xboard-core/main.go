@@ -324,6 +324,7 @@ func (r *runner) loop(ctx context.Context) error {
 			slog.Info("pull interval updated by panel", "every", every.String())
 		case up := <-r.wsUp:
 			// 推送在线时把轮询退成兜底（防"事件丢了"）；掉线立刻回到面板配置的节奏。
+			// 注意：上报节奏不跟着退——面板的在线数/流量/负载靠它，退成 5 分钟会被当成节点卡死。
 			every := r.pull
 			if up {
 				every = wsPollFallback
@@ -332,7 +333,6 @@ func (r *runner) loop(ctx context.Context) error {
 				}
 			}
 			tick.Reset(every)
-			reportTick.Reset(reportEvery(every))
 		case <-reportTick.C:
 			if err := r.report(ctx); err != nil {
 				slog.Warn("report", "err", err)
