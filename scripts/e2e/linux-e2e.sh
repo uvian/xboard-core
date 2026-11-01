@@ -184,17 +184,31 @@ if [ ! -x "$E2E/bin/xray-pristine" ]; then
   git clone -q --depth 1 -b v26.10.31 https://github.com/XTLS/Xray-core "$E2E/xray-pristine" >>"$E2E/logs/pristine-clone.log" 2>&1
   ( cd "$E2E/xray-pristine" && timeout 600 go build -o "$E2E/bin/xray-pristine" ./main ) >>"$E2E/logs/pristine-build.log" 2>&1
 fi
+PSRV=$((PORT_NODE+3)); PCLI=$((PORT_SOCKS+4))
+cat > "$E2E/node/stock2.json" <<JSON
+{"log":{"loglevel":"debug"},
+ "inbounds":[{"tag":"in","listen":"127.0.0.1","port":$PSRV,"protocol":"vless",
+   "settings":{"clients":[{"id":"$UUID"}],"decryption":"none"}}],
+ "outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}
+JSON
+cat > "$E2E/node/client-stock2.json" <<JSON
+{"log":{"loglevel":"debug"},
+ "inbounds":[{"tag":"s","listen":"127.0.0.1","port":$PCLI,"protocol":"socks","settings":{"udp":false}}],
+ "outbounds":[{"tag":"p","protocol":"vless",
+   "settings":{"vnext":[{"address":"127.0.0.1","port":$PSRV,"users":[{"id":"$UUID","encryption":"none"}]}]},
+   "streamSettings":{"network":"tcp","security":"none"}}]}
+JSON
 if [ -x "$E2E/bin/xray-pristine" ]; then
-  sed "s/\"port\":$((PORT_NODE+2))/\"port\":$((PORT_NODE+3))/" "$E2E/node/stock.json" > "$E2E/node/stock2.json"
   nohup "$E2E/bin/xray-pristine" run -c "$E2E/node/stock2.json" >"$E2E/logs/stock2.log" 2>&1 &
   sleep 2
-  sed "s/$PORT_NODE/$((PORT_NODE+3))/; s/\"port\":$PORT_SOCKS/\"port\":$((PORT_SOCKS+4))/" "$E2E/node/client.json" > "$E2E/node/client-stock2.json"
   nohup "$E2E/bin/xray-pristine" run -c "$E2E/node/client-stock2.json" >"$E2E/logs/client-stock2.log" 2>&1 &
   sleep 2
-  p2=$(curl -sS --max-time 10 --socks5-hostname 127.0.0.1:$((PORT_SOCKS+4)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+  p2=$(curl -sS --max-time 10 --socks5-hostname 127.0.0.1:$PCLI "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
   echo "  纯净二进制结果: ${p2:-<empty>}"
-  echo "$p2" | grep -q hello-e2e && ok "5c 纯净二进制全链路通" || bad "5c 纯净二进制也不通（环境限制，与我们的补丁无关）"
-  grep -aiE "dialing|accepted" "$E2E/logs/stock2.log" | tail -3
+  echo "$p2" | grep -q hello-e2e && ok "5c 纯净二进制全链路通" || bad "5c 纯净二进制也不通（环境限制）"
+  grep -aiE "dialing|accepted|Failed" "$E2E/logs/stock2.log" | tail -3
+else
+  bad "5c 纯净二进制没编出来"
 fi
 
 say "6. 真实流量 → 面板 u/d"
