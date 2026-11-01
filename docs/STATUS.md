@@ -155,3 +155,24 @@ php -l app/Http/Requests/Admin/ServerSave.php
 - 连接建立后立刻补一次 `pullOnce`，避免"连上了但推送刚好丢了"要等 300s。
 - 自签证书：`Node.WsInsecure` / `Machine.WsInsecure` 单点开关，不做全局 `InsecureSkipVerify`——配置下发链路里带 token。
 
+## 7. sing-box 内核（anytls / tuic / hysteria2）
+
+xray 上游没有 anytls/tuic/hysteria2（只有 wyx2685 fork 有）。我们按 ADR-2 用 **子进程** 接 sing-box，
+而不是把 sing-box 作为库引进来：协议转换这件事不值得一棵几十个包的依赖树。
+
+| 项 | 实现 |
+| --- | --- |
+| 协议 | `anytls` / `tuic` / `hysteria2`（`hysteria` 别名按 v2 参数集处理） |
+| 配置生成 | `internal/kernel/singbox/build.go`：inbound + 直连 outbound，不写 route（分流在面板侧） |
+| 用户字段 | `name = id.uuid`（和 xray 的 email 同格式，排障能直接对上人） |
+| TLS | 必须：`cert_config.cert_file/key_file` 或 `tls_settings`；缺了直接报错，不起空监听 |
+| tuic 默认 | `congestion_control=bbr`、`auth_timeout=3s`、`zero_rtt_handshake=false`（面板没下发时补默认，否则 sing-box 拒整份 config） |
+| hysteria2 | `up_mbps/down_mbps`；`obfs` 只认 `salamander`，认不出的名字整段丢掉（写进去会拒 config） |
+| 用户变更 | **重启进程**（sing-box 无热更用户的 API）；相同批次的重复推送不触发重启 |
+| 就绪判定 | 启动后按 TCP 拨号确认端口真的在听，超时则收掉进程并回带日志尾巴 |
+| 可执行文件 | `Kernel.SingboxBinary`（默认 `sing-box`）、`Kernel.SingboxDir`（默认 `run/singbox`） |
+
+**已知缺口（必须记住）**：设备数限制与限速挂在 xray 的 dispatcher 上（`app/usergate`）。sing-box 是子进程，
+没有等价注入点 → **这三类协议上闸门不生效**，进程启动时会对每个节点打一条 WARN。
+需要设备数/限速的节点请用 vless/vmess/trojan/ss2022（xray 侧）。
+

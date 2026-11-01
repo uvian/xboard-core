@@ -55,6 +55,9 @@ type KernelConf struct {
 	// sing-box 用于 anytls/tuic/hysteria2。二者可同时启用。
 	Xray    bool `mapstructure:"Xray"`
 	Singbox bool `mapstructure:"Singbox"`
+	// SingboxBinary / SingboxDir：sing-box 走子进程（不是库），这两个是它的可执行文件与工作目录。
+	SingboxBinary string `mapstructure:"SingboxBinary"`
+	SingboxDir    string `mapstructure:"SingboxDir"`
 }
 
 func defaults() *Conf {
@@ -62,7 +65,7 @@ func defaults() *Conf {
 		Log:    LogConf{Level: "info"},
 		Node:   NodeConf{Timeout: 15, Retry: 3, PullEvery: 60},
 		API:    APIConf{Listen: "127.0.0.1:8090", Metrics: true},
-		Kernel: KernelConf{Xray: true},
+		Kernel: KernelConf{Xray: true, SingboxBinary: "sing-box", SingboxDir: "run/singbox"},
 	}
 }
 

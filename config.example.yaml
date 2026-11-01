@@ -27,4 +27,10 @@ Kernel:
   Singbox: false   # anytls/tuic/hysteria2（M1 接入）
 # 面板 ws_url 用自签证书时才需要（默认 false：配置下发链路里带 token，别全局放开校验）
 # Node: { WsInsecure: false }
+# sing-box 内核（anytls / tuic / hysteria2）走子进程，不走库：
+# Kernel:
+#   Xray: true
+#   Singbox: true
+#   SingboxBinary: sing-box
+#   SingboxDir: run/singbox
 

@@ -19,6 +19,7 @@ import (
 	"github.com/xboard-ng/xboard-core/internal/config"
 	"github.com/xboard-ng/xboard-core/internal/gate"
 	"github.com/xboard-ng/xboard-core/internal/kernel"
+	"github.com/xboard-ng/xboard-core/internal/kernel/singbox"
 	"github.com/xboard-ng/xboard-core/internal/kernel/xray"
 	"github.com/xboard-ng/xboard-core/internal/metrics"
 	"github.com/xboard-ng/xboard-core/internal/panel"
@@ -184,12 +185,27 @@ func (s *supervisor) reconcile(_ context.Context, ids []int) {
 	}
 }
 
+// buildRegistry 按配置注册内核。顺序即优先级：能承载同一协议时取先注册的（xray 在前）。
+func buildRegistry(cfg *config.Conf, g *gate.Gate) *kernel.Registry {
+	ks := make([]kernel.Kernel, 0, 2)
+	if cfg.Kernel.Xray {
+		ks = append(ks, xray.NewNode(g))
+	}
+	if cfg.Kernel.Singbox {
+		ks = append(ks, singbox.New(g, singbox.Options{
+			Binary:  cfg.Kernel.SingboxBinary,
+			WorkDir: cfg.Kernel.SingboxDir,
+		}))
+	}
+	return kernel.NewRegistry(ks...)
+}
+
 // newRunner 每个节点一条：独立的内核实例、流量计数器与标签。
 func newRunner(cfg *config.Conf, c *panel.Client, g *gate.Gate, mx *metrics.Registry) *runner {
 	return &runner{
 		cfg:      cfg,
 		client:   c,
-		registry: kernel.NewRegistry(xray.NewNode(g)),
+		registry: buildRegistry(cfg, g),
 		gate:     g,
 		traffic:  traffic.NewCollector(),
 		metrics:  mx,
@@ -226,6 +242,8 @@ type runner struct {
 	applyMu sync.Mutex
 	// onNodes 只在机器模式用到：面板推 sync.nodes 时通知上层增删 runner。
 	onNodes func(ctx context.Context, ids []int)
+	// gateWarned 保证"sing-box 无闸门"这条警告每个节点只打一次。
+	gateWarned bool
 }
 
 // handshake 问面板要不要走 WS 推送。拿不到就纯轮询，正确性不受影响：
@@ -360,6 +378,13 @@ func (r *runner) apply(ctx context.Context, node *panel.NodeConfig, users []pane
 			return err
 		}
 		r.kernel, r.node, r.users = k, node, users
+		if k.Name() != "xray" && !r.gateWarned {
+			// 设备数/限速挂在 xray 的 dispatcher 上（app/usergate）。sing-box 走子进程，
+			// 没有等价的注入点：这类协议只做协议转换，闸门不生效。说清楚比默默放行好。
+			r.gateWarned = true
+			slog.Warn("该协议由 sing-box 承载：设备数限制与限速在此节点不生效",
+				"protocol", node.Protocol, "kernel", k.Name())
+		}
 		r.metrics.Users.Store(int64(len(users)))
 		slog.Info("kernel started", "kernel", k.Name(), "protocol", node.Protocol,
 			"tag", node.Tag, "network", node.Network, "port", node.ServerPort, "users", len(users))
