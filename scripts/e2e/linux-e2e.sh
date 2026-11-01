@@ -135,7 +135,7 @@ PHP
     [ "$hb" = "heartbeat" ] && break
     sleep 1
   done
-  hs=$(curl -sS --max-time 5 -H "token: $TOKEN" -H "node_id: $NODE_ID" "http://127.0.0.1:$PORT_PANEL/api/v2/server/handshake" 2>/dev/null || true)
+  hs=$(curl -sS --max-time 5 "http://127.0.0.1:$PORT_PANEL/api/v2/server/handshake?token=$TOKEN&node_id=$NODE_ID" 2>/dev/null || true)
   if [ "$hb" = "heartbeat" ] && echo "$hs" | grep -q '"enabled":true'; then
     ok "2.5 WS 就绪（心跳缓存存在 + handshake websocket.enabled=true）"
   else
@@ -301,8 +301,8 @@ fi
 
 say "9. WS 推送"
 if [ "$HAVE_PCNTL" = 1 ]; then
-  if grep -qiE 'auth.success|sync\.config|websocket 已连接|ws connected' "$E2E/logs/node.log"; then
-    ok "10 WS 事件到达节点（auth.success / sync.config）"
+  if grep -q 'ws push connected' "$E2E/logs/node.log" && grep -qiE 'auth.success|sync\.config' "$E2E/logs/node.log"; then
+    ok "10 WS 推送已连上且收到事件（auth.success / sync.config）"
   else
     bad "10 节点未收到 WS 事件（node.log 与 ws.log 见现场）"
   fi

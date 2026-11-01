@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
@@ -264,9 +265,29 @@ func (r *runner) handshake(ctx context.Context) {
 		slog.Warn("panel reports ws enabled but ws_url is empty, polling only")
 		return
 	}
-	r.wsURL = url
+	// 面板只给 ws://host:port/ws，鉴权参数要自己拼：Workerman 侧从 query 取
+	// token + node_id（节点模式）或 token + machine_id（机器模式），否则连上即被 close。
+	r.wsURL = withAuth(url, r.cfg)
 	r.wsInsecure = r.cfg.Node.WSInsecure
 	slog.Info("panel offers websocket push", "ws_url", url)
+}
+
+// withAuth 把面板要求鉴权参数拼进 ws_url 的 query。
+func withAuth(raw string, cfg *config.Conf) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	q := u.Query()
+	q.Set("token", cfg.Node.APIKey)
+	if cfg.Machine.Enabled {
+		q.Set("machine_id", strconv.Itoa(cfg.Machine.MachineID))
+		q.Set("node_id", strconv.Itoa(cfg.Node.NodeID))
+	} else {
+		q.Set("node_id", strconv.Itoa(cfg.Node.NodeID))
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func (r *runner) loop(ctx context.Context) error {
