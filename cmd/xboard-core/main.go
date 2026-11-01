@@ -469,6 +469,12 @@ func (r *runner) report(ctx context.Context) error {
 	if r.kernel == nil || r.node == nil {
 		return nil
 	}
+	// 先把内核侧的累计计数采成增量，再 Drain 出本拍要上报的量。
+	if s, ok := r.kernel.(kernel.TrafficSampler); ok {
+		for uid, d := range s.SampleTraffic() {
+			r.traffic.Add(uid, d[0], d[1])
+		}
+	}
 	online := r.gate.Online(r.node.Tag)
 	rep := &panel.Report{
 		Traffic: r.traffic.Drain(),

@@ -118,6 +118,34 @@ for i in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PORT_PANEL/api/
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_PANEL/api/v2/server/config")
 [ "$code" = 422 ] && ok "1 无 token → $code（鉴权中间件生效）" || bad "1 无 token 期望 422，实际 $code"
 
+say "4.5 WS 服务（必须早于节点启动：handshake 只在心跳缓存存在时才给 ws_url）"
+if [ "$HAVE_PCNTL" = 1 ]; then
+  cat > "$E2E/panel/ws_probe.php" <<'PHP'
+<?php
+require __DIR__."/vendor/autoload.php";
+$app = require __DIR__."/bootstrap/app.php";
+$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+echo Illuminate\Support\Facades\Cache::has("ws_server:heartbeat") ? "heartbeat" : "none";
+PHP
+  ( cd "$E2E/panel" && nohup php artisan ws-server start >"$E2E/logs/ws.log" 2>&1 & )
+  hb=none
+  for _ in $(seq 1 25); do
+    hb=$( cd "$E2E/panel" && php ws_probe.php 2>/dev/null | tr -d '
+' )
+    [ "$hb" = "heartbeat" ] && break
+    sleep 1
+  done
+  hs=$(curl -sS --max-time 5 -H "token: $TOKEN" -H "node_id: $NODE_ID" "http://127.0.0.1:$PORT_PANEL/api/v2/server/handshake" 2>/dev/null || true)
+  if [ "$hb" = "heartbeat" ] && echo "$hs" | grep -q '"enabled":true'; then
+    ok "2.5 WS 就绪（心跳缓存存在 + handshake websocket.enabled=true）"
+  else
+    bad "2.5 WS 未就绪：heartbeat=$hb handshake=$hs（见 ws.log）"
+  fi
+else
+  printf '  [33mSKIP[0m 2.5 本机 PHP 无 pcntl，WS 服务起不来
+'
+fi
+
 export GOFLAGS=-mod=mod   # 允许 go 自动补齐 go.sum（跨平台依赖）
 # third_party/xray 不入库（.gitignore），CI 里必须先 vendor 再打补丁
 cd "$E2E/core"
@@ -240,7 +268,15 @@ nohup "$XRAY" run -c "$E2E/node/client-stock.json" >"$E2E/logs/client-stock.log"
 sleep 2
 stock=$(curl -sS --max-time 10 --socks5 127.0.0.1:$((PORT_SOCKS+2)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
 echo "  对照结果: ${stock:-<empty>}"
-echo "$stock" | grep -q hello-e2e && ok "6b 纯净 Xray 全链路通（问题在我们节点）" || bad "6b 纯净 Xray 也不通（环境/源站问题）"
+# 纯净 v26 服务端同样会被 freedom 的 defaultBlockPrivateRule 拦住，这是上游行为，
+# 不是我们的配置问题；反过来也证明「放行私网」必须由节点侧显式打开。
+if echo "$stock" | grep -q hello-e2e; then
+  bad "6b 纯净 Xray 竟然放行了私网目标（上游行为变了？）"
+elif grep -q "blocked target" "$E2E/logs/stock.log"; then
+  ok "6b 纯净 v26 服务端同样拦截私网目标（证明放行必须显式打开）"
+else
+  bad "6b 纯净 Xray 失败原因不是私网拦截，需另查"
+fi
 
 say "7. 契约快照（供人工核对）"
 (cd "$E2E/panel" && php -r '
@@ -265,15 +301,14 @@ fi
 
 say "9. WS 推送"
 if [ "$HAVE_PCNTL" = 1 ]; then
-  ( cd "$E2E/panel" && nohup php artisan ws-server start >"$E2E/logs/ws.log" 2>&1 & )
-  sleep 3
-  if grep -qi 'sync.config\|auth.success\|websocket' "$E2E/logs/node.log"; then
-    ok "10 WS 事件到达节点"
+  if grep -qiE 'auth.success|sync\.config|websocket 已连接|ws connected' "$E2E/logs/node.log"; then
+    ok "10 WS 事件到达节点（auth.success / sync.config）"
   else
-    bad "10 未见到 WS 事件（面板 server_ws_enable / ws_url / 心跳缓存？）"
+    bad "10 节点未收到 WS 事件（node.log 与 ws.log 见现场）"
   fi
 else
-  printf '  \033[33mSKIP\033[0m 10 本机 PHP 无 pcntl，WS 服务起不来\n'
+  printf '  [33mSKIP[0m 10 本机 PHP 无 pcntl，WS 服务起不来
+'
 fi
 
 say "结果"

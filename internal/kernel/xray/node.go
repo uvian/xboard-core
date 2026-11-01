@@ -21,6 +21,8 @@ type Node struct {
 	users    []panel.UserInfo
 	gate     usergate.Gate
 	tag      string
+	// lastTraffic 保存上次采样到的累计流量，SampleTraffic 用它算增量。
+	lastTraffic map[string][2]int64
 }
 
 func NewNode(g usergate.Gate) *Node { return &Node{gate: g} }

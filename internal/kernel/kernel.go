@@ -44,3 +44,9 @@ func (r *Registry) Names() []string {
 	sort.Strings(out)
 	return out
 }
+
+// TrafficSampler 是可选能力：内核能给出「自上次采样以来」每用户增量流量时实现它。
+// xray 的 stats 是累计值，必须做差；sing-box 侧暂不实现（返回空即可）。
+type TrafficSampler interface {
+	SampleTraffic() map[int][2]int64
+}
