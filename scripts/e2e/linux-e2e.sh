@@ -175,6 +175,22 @@ UD=$(cd "$E2E/panel" && php -r 'require "vendor/autoload.php"; $a=require "boots
 echo "  面板 u/d = $UD"
 [ "$UD" != "0,0" ] && ok "7 traffic 入库 u/d=$UD" || bad "7 traffic 没入库"
 
+say "6b. 对照实验：纯净 Xray 服务端（排除我们节点配置的影响）"
+cat > "$E2E/node/stock.json" <<JSON
+{"log":{"loglevel":"debug"},
+ "inbounds":[{"tag":"in","listen":"127.0.0.1","port":$((PORT_NODE+2)),"protocol":"vless",
+   "settings":{"clients":[{"id":"$UUID"}],"decryption":"none"}}],
+ "outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}
+JSON
+nohup "$XRAY" run -c "$E2E/node/stock.json" >"$E2E/logs/stock.log" 2>&1 &
+sleep 2
+sed "s/$PORT_NODE/$((PORT_NODE+2))/; s/\"port\":$PORT_SOCKS/\"port\":$((PORT_SOCKS+2))/" "$E2E/node/client.json" > "$E2E/node/client-stock.json"
+nohup "$XRAY" run -c "$E2E/node/client-stock.json" >"$E2E/logs/client-stock.log" 2>&1 &
+sleep 2
+stock=$(curl -sS --max-time 10 --socks5-hostname 127.0.0.1:$((PORT_SOCKS+2)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+echo "  对照结果: ${stock:-<empty>}"
+echo "$stock" | grep -q hello-e2e && ok "6b 纯净 Xray 全链路通（问题在我们节点）" || bad "6b 纯净 Xray 也不通（环境/源站问题）"
+
 say "7. 契约快照（供人工核对）"
 (cd "$E2E/panel" && php -r '
 require "vendor/autoload.php"; $a=require "bootstrap/app.php";
