@@ -166,6 +166,19 @@ JSON
 nohup "$XRAY" run -c "$E2E/node/client.json" >"$E2E/logs/client.log" 2>&1 &
 sleep 2
 
+say "5b. 微诊断：源站可重复访问 / xray 直连出口"
+curl -s --max-time 5 "http://127.0.0.1:$PORT_ORIGIN/small.txt" >/dev/null && echo "  源站第2次直连 OK" || echo "  源站第2次直连失败"
+cat > "$E2E/node/socksonly.json" <<JSON
+{"log":{"loglevel":"debug"},
+ "inbounds":[{"tag":"s","listen":"127.0.0.1","port":$((PORT_SOCKS+3)),"protocol":"socks","settings":{"udp":false}}],
+ "outbounds":[{"tag":"direct","protocol":"freedom","settings":{}}]}
+JSON
+nohup "$XRAY" run -c "$E2E/node/socksonly.json" >"$E2E/logs/socksonly.log" 2>&1 &
+sleep 2
+s1=$(curl -sS --max-time 8 --socks5-hostname 127.0.0.1:$((PORT_SOCKS+3)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+echo "  socks-only 出口: ${s1:-<empty>}"
+grep -aiE "dialing|accepted" "$E2E/logs/socksonly.log" | tail -3
+
 say "6. 真实流量 → 面板 u/d"
 got=$(curl -sS --max-time 15 --socks5-hostname 127.0.0.1:"$PORT_SOCKS" "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
 echo "$got" | grep -q hello-e2e && ok "7 经节点取到源站内容" || { bad "7 数据面不通"; dump; }
