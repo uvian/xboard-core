@@ -115,7 +115,11 @@ for i in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PORT_PANEL/api/
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_PANEL/api/v2/server/config")
 [ "$code" = 422 ] && ok "1 无 token → $code（鉴权中间件生效）" || bad "1 无 token 期望 422，实际 $code"
 
-cd "$E2E/core" && timeout 900 make build >"$E2E/logs/build.log" 2>&1 || die "make build 失败（要看 Go 环境）"
+# third_party/xray 不入库（.gitignore），CI 里必须先 vendor 再打补丁
+cd "$E2E/core"
+[ -f third_party/xray/go.mod ] || timeout 600 make vendor >"$E2E/logs/vendor.log" 2>&1 || die "make vendor 失败"
+timeout 300 make patches >"$E2E/logs/patch.log" 2>&1 || die "打 usergate 补丁失败"
+timeout 900 make build >"$E2E/logs/build.log" 2>&1 || die "make build 失败（要看 Go 环境）"
 cp bin/xboard-core "$E2E/bin/xboard-core"
 cat > "$E2E/node/config.yaml" <<YAML
 log: {level: debug}
