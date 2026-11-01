@@ -34,13 +34,13 @@ jobs:
         env:
           E2E: ${{ runner.temp }}/xboard-e2e
         run: |
-          # 写文件而不是管道：管道会被 suto/tee 块缓冲，挂住时一行都看不到。
+          # 写文件而不是管道：管道会被 sudo/tee 块缓冲，挂住时一行都看不到。
           # 再套一层 timeout，保证这一步永远会结束，结束后的"汇总现场"才有东西可看。
           set +e
           timeout 1080 sudo --preserve-env=E2E,GITHUB_WORKSPACE bash scripts/e2e/linux-e2e.sh >"$RUNNER_TEMP/e2e-logs/main.log" 2>&1
           rc=$?
           echo "e2e exit=$rc"
-          sed 's/\[[0-9;]*m//g' "$RUNNER_TEMP/e2e-logs/main.log" | tail -60
+          sed -r 's/\x1B\[[0-9;]*[mK]//g' "$RUNNER_TEMP/e2e-logs/main.log" | tail -60
           exit $rc
 
       - name: 汇总现场
