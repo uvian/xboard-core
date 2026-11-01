@@ -67,7 +67,7 @@ git apply --check "$E2E/core/panel-patch/0001-reality-schema-and-transport-guard
   && git apply "$E2E/core/panel-patch/0001-reality-schema-and-transport-guard.patch" \
   || echo "  (补丁已打过或已不适用，继续)"
 php -l app/Models/Server.php >/dev/null && ok "补丁后 PHP 语法" || bad "PHP 语法"
-[ -d vendor ] || composer install -q --no-interaction --no-progress --ignore-platform-reqs >"$E2E/logs/composer.log" 2>&1 || die "composer install 失败"
+[ -d vendor ] || timeout 600 composer install -q --no-interaction --no-progress --ignore-platform-reqs >"$E2E/logs/composer.log" 2>&1 || die "composer install 失败"
 composer show predis/predis >/dev/null 2>&1 || composer require -q --no-interaction --ignore-platform-reqs predis/predis >/dev/null 2>&1
 
 say "2. 面板：环境与建库"
@@ -82,7 +82,7 @@ sed -i 's|^CACHE_STORE=.*|CACHE_STORE=redis|; s|^CACHE_DRIVER=.*|CACHE_DRIVER=re
 sed -i 's|^QUEUE_CONNECTION=.*|QUEUE_CONNECTION=sync|' .env
 grep -q '^INSTALLED=' .env && sed -i 's|^INSTALLED=.*|INSTALLED=true|' .env || echo 'INSTALLED=true' >> .env
 : > database/e2e.sqlite
-php artisan migrate --force >"$E2E/logs/migrate.log" 2>&1 || die "迁移失败"
+timeout 300 php artisan migrate --force >"$E2E/logs/migrate.log" 2>&1 || die "迁移失败"
 
 say "3. 夹具：token / 用户 / 节点"
 cat > "$E2E/panel/e2e_seed.php" <<PHP
@@ -115,7 +115,7 @@ for i in $(seq 1 40); do curl -s -o /dev/null "http://127.0.0.1:$PORT_PANEL/api/
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_PANEL/api/v2/server/config")
 [ "$code" = 422 ] && ok "1 无 token → $code（鉴权中间件生效）" || bad "1 无 token 期望 422，实际 $code"
 
-cd "$E2E/core" && make build >"$E2E/logs/build.log" 2>&1 || die "make build 失败（要看 Go 环境）"
+cd "$E2E/core" && timeout 900 make build >"$E2E/logs/build.log" 2>&1 || die "make build 失败（要看 Go 环境）"
 cp bin/xboard-core "$E2E/bin/xboard-core"
 cat > "$E2E/node/config.yaml" <<YAML
 log: {level: debug}
@@ -144,7 +144,7 @@ curl -s "http://127.0.0.1:$PORT_ORIGIN/small.txt" | grep -q hello-e2e && ok "源
 XRAY=$(command -v xray || echo "$E2E/bin/xray")
 if [ ! -x "$XRAY" ]; then
   # 用 vendored 源码编一个客户端，保证和服务端同版本
-  ( cd "$E2E/core/third_party/xray" && go build -o "$E2E/bin/xray" ./main ) >"$E2E/logs/xray-build.log" 2>&1 || die "编 xray 客户端失败"
+  ( cd "$E2E/core/third_party/xray" && timeout 600 go build -o "$E2E/bin/xray" ./main ) >"$E2E/logs/xray-build.log" 2>&1 || die "编 xray 客户端失败"
   XRAY="$E2E/bin/xray"
 fi
 cat > "$E2E/node/client.json" <<JSON

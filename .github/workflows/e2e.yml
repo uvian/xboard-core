@@ -35,7 +35,8 @@ jobs:
           E2E: ${{ runner.temp }}/xboard-e2e
         run: |
           set -o pipefail
-          sudo --preserve-env=E2E,GITHUB_WORKSPACE bash scripts/e2e/linux-e2e.sh 2>&1 | tee "$RUNNER_TEMP/e2e-logs/main.log"
+          # stdbuf 关掉块缓冲，否则长脚本的进度要等结束才看得到
+          sudo --preserve-env=E2E,GITHUB_WORKSPACE stdbuf -oL -eL bash scripts/e2e/linux-e2e.sh 2>&1 | tee "$RUNNER_TEMP/e2e-logs/main.log"
 
       - name: 汇总现场
         if: always()
