@@ -1,7 +1,7 @@
 # 现状清单：已实现 / 未实现 / 怎么验
 
-一句话：**契约层已经与 `cedar2025/Xboard` master（`e68fec5`）对齐到源码级；代码尚未编译过**
-（本机没有 Go 工具链，也没有 PHP CLI），所以下面每一行都属于"读出来的确定"与"跑出来的未确定"两类之一。
+一句话：**契约层与 `cedar2025/Xboard` master（`e68fec5`）源码级对齐；Go 侧已用 go1.27.3 全量编译并通过
+测试、vet、冒烟与 vendored 单测**（见 §3 的实测命令与输出），PHP 侧补丁仍未 lint（本机无 PHP CLI）。
 
 ---
 
@@ -43,7 +43,8 @@
 
 | 项 | 影响 | 计划 |
 | --- | --- | --- |
-| **编译未验证** | 可能存在类型/签名错误 | 一有 Go 环境立刻 `make verify`（见 §3） |
+| **PHP 侧未 lint** | 面板补丁可能有语法错误 | 有 PHP 环境后 `php -l` 三个文件（见 §3） |
+| **未与真实面板联调** | 契约按源码对齐，但未跑过真机 | 一台节点 + 一个面板跑 §3.3 |
 | sing-box 内核 | anytls / tuic / hysteria2 节点会被拒绝（`no kernel supports protocol`） | M2 |
 | WS `sync.*` 事件消费 | 配置/用户变动要等下一个轮询周期（≤60s） | M2，且必须保留轮询兜底 |
 | ACME 证书签发 | `cert_config` 目前只认 `cert_file/key_file` 与内联 `tls_cert/tls_key`；`provider/acme` 方式不生效 | M3（先做 http-01，DNS-01 复用面板 DNSEnv） |
@@ -57,13 +58,24 @@
 
 ## 3. 怎么验（按成本从低到高）
 
+已实测通过（go1.27.3 windows/amd64，2026-11-01）：
+
+```
+go build ./...                                   # exit 0
+go test ./...                                    # gate / kernel/xray / panel / traffic 全 ok
+gofmt -l cmd internal                            # 无输出
+go vet ./cmd/... ./internal/...                  # 无输出
+go run ./cmd/xboard-core -smoke                  # smoke ok: vless/tcp inbound=1 app=6 bytes=1003
+cd third_party/xray && go test ./app/usergate/... ./app/dispatcher/...   # 均 ok
+bash scripts/verify.sh                           # 以上全套 + 补丁幂等，末尾 "OK: 全部通过"
+```
+
 ```bash
 # 0) 只看契约，不需要环境：docs/CONTRACT.md §9 的四条 curl
-# 1) 有 Go 时（第一次构建）
-make vendor          # 拉 Xray-core v26.10.31 到 third_party/xray
-make patches         # git am --3way 应用 0001-usergate.patch
-make verify          # gofmt + go vet + go test + 补丁 dry-run
-make smoke           # go run ./cmd/xboard-core -smoke（合成 vless/tcp 配置，打印 inbound/app 字节数）
+# 1) 从零构建
+make vendor          # 拉 Xray-core v26.10.31 到 third_party/xray（Windows 无 make 见 README）
+make patches         # GNU patch 幂等应用 0001-usergate.patch
+bash scripts/verify.sh   # 等价 make verify
 # 2) 有 PHP 时
 php -l app/Services/ServerService.php
 php -l app/Models/Server.php

@@ -47,14 +47,23 @@ docs/                     # 架构决策记录、面板改造清单
 
 ## 构建
 
+依赖：Go 1.27+（`go.mod` 要求），git、GNU patch。
+
 ```bash
-./scripts/apply-patches.sh          # 把 patches/*.patch 打到 third_party/xray
-go build ./...
-go test ./...
-make smoke                          # 起一个假面板 + 单节点，验证配置构建与闸门
+make vendor          # clone Xray-core v26.10.31 到 third_party/xray
+make patches         # 打 patches/*.patch（幂等）
+make build           # -> bin/xboard-core
+bash scripts/verify.sh   # gofmt + vet + test + build + smoke + vendored 单测 + 补丁幂等
 ```
 
-> 当前仓库处于脚手架阶段：`internal/*` 的接口与安全默认已按上述决策写定，`third_party/xray` 尚未 vendored（`go.mod` 里是本地 replace 占位）。
+没有 `make` 的机器（例如 Windows 上的 git-bash）直接跑 `bash scripts/verify.sh`，它与 `make verify` 等价；
+`make vendor` 可用一条 `tar` 管道替代，见 Makefile 里的实现。
+
+> Windows 注意：若 `%TEMP%` 不可写，go 会报 `creating work dir: ... Access is denied`，
+> 构建前 `export TMP=D:/tmp TEMP=D:/tmp` 即可（`scripts/verify.sh` 支持 `GO_TMP` 变量）。
+
+当前状态见 [`docs/STATUS.md`](docs/STATUS.md)：`go build ./...`、`go test ./...`、`-smoke`、
+vendored `app/usergate` 与 `app/dispatcher` 单测均已通过。
 
 ## 安全默认（不可被面板覆盖的硬约束）
 

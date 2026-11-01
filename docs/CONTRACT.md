@@ -149,7 +149,10 @@ active_users, inbound_speed, outbound_speed, cpu_per_core, load, speed_limiter, 
 
 ---
 
-## 9. 最小化验证（无 Go / 无 PHP 环境也能跑）
+## 9. 最小化验证（只需要 curl + jq，不用装 Go / PHP）
+
+> Go 侧的编译与单测已验证通过，见 `docs/STATUS.md` §3；这一节是在**真机上联调**前先用手工请求
+> 把面板行为钉死的办法，用来发现"面板版本比本表新"这类漂移。
 
 ```bash
 # A. 面板侧：老节点配置在补丁后仍可下发（不 500），且新增键存在
