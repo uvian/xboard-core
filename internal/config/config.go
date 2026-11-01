@@ -83,6 +83,7 @@ func Load(path string) (*Conf, error) {
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	applyAliases(v)
 	if err := v.Unmarshal(c); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
@@ -124,3 +125,38 @@ func (c *Conf) validate() error {
 
 // Timeout 返回面板请求超时。
 func (c *Conf) Timeout() time.Duration { return time.Duration(c.Node.Timeout) * time.Second }
+
+// aliases 让 snake_case 写法和结构体上的 CamelCase 等价。
+// 用户大多按 YAML 习惯写 api_host，而 mapstructure tag 是 ApiHost；
+// viper 的 key 是小写但不做下划线折叠，所以这里显式搬一次。
+var aliases = map[string]string{
+	"log.level":             "Log.Level",
+	"log.output":            "Log.Output",
+	"node.api_host":         "Node.ApiHost",
+	"node.node_id":          "Node.NodeID",
+	"node.api_key":          "Node.ApiKey",
+	"node.timeout":          "Node.Timeout",
+	"node.retry":            "Node.Retry",
+	"node.pull_every":       "Node.PullEvery",
+	"node.ws_insecure":      "Node.WsInsecure",
+	"machine.enabled":       "Machine.Enabled",
+	"machine.api_host":      "Machine.ApiHost",
+	"machine.machine_id":    "Machine.MachineID",
+	"machine.node_ids":      "Machine.NodeIDs",
+	"machine.token":         "Machine.Token",
+	"machine.ws_insecure":   "Machine.WSInsecure",
+	"api.listen":            "API.Listen",
+	"api.metrics":           "API.Metrics",
+	"kernel.xray":           "Kernel.Xray",
+	"kernel.singbox":        "Kernel.Singbox",
+	"kernel.singbox_binary": "Kernel.SingboxBinary",
+	"kernel.singbox_dir":    "Kernel.SingboxDir",
+}
+
+func applyAliases(v *viper.Viper) {
+	for from, to := range aliases {
+		if v.IsSet(from) && !v.IsSet(to) {
+			v.Set(to, v.Get(from))
+		}
+	}
+}
