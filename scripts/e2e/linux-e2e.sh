@@ -175,7 +175,7 @@ cat > "$E2E/node/socksonly.json" <<JSON
 JSON
 nohup "$XRAY" run -c "$E2E/node/socksonly.json" >"$E2E/logs/socksonly.log" 2>&1 &
 sleep 2
-s1=$(curl -sS --max-time 8 --socks5-hostname 127.0.0.1:$((PORT_SOCKS+3)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+s1=$(curl -sS --max-time 8 --socks5 127.0.0.1:$((PORT_SOCKS+3)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
 echo "  socks-only 出口: ${s1:-<empty>}"
 grep -aiE "dialing|accepted" "$E2E/logs/socksonly.log" | tail -3
 
@@ -203,7 +203,7 @@ if [ -x "$E2E/bin/xray-pristine" ]; then
   sleep 2
   nohup "$E2E/bin/xray-pristine" run -c "$E2E/node/client-stock2.json" >"$E2E/logs/client-stock2.log" 2>&1 &
   sleep 2
-  p2=$(curl -sS --max-time 10 --socks5-hostname 127.0.0.1:$PCLI "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+  p2=$(curl -sS --max-time 10 --socks5 127.0.0.1:$PCLI "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
   echo "  纯净二进制结果: ${p2:-<empty>}"
   echo "$p2" | grep -q hello-e2e && ok "5c 纯净二进制全链路通" || bad "5c 纯净二进制也不通（环境限制）"
   grep -aiE "dialing|accepted|Failed" "$E2E/logs/stock2.log" | tail -3
@@ -212,9 +212,9 @@ else
 fi
 
 say "6. 真实流量 → 面板 u/d"
-got=$(curl -sS --max-time 15 --socks5-hostname 127.0.0.1:"$PORT_SOCKS" "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+got=$(curl -sS --max-time 15 --socks5 127.0.0.1:"$PORT_SOCKS" "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
 echo "$got" | grep -q hello-e2e && ok "7 经节点取到源站内容" || { bad "7 数据面不通"; dump; }
-curl -s --max-time 20 --socks5-hostname 127.0.0.1:"$PORT_SOCKS" -o /dev/null "http://127.0.0.1:$PORT_ORIGIN/blob.bin" || true
+curl -s --max-time 20 --socks5 127.0.0.1:"$PORT_SOCKS" -o /dev/null "http://127.0.0.1:$PORT_ORIGIN/blob.bin" || true
 sleep 35   # 等一拍 report
 UD=$(cd "$E2E/panel" && php -r 'require "vendor/autoload.php"; $a=require "bootstrap/app.php"; $a->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap(); $u=App\Models\User::find('"$USER_ID"'); echo $u->u.",".$u->d;')
 echo "  面板 u/d = $UD"
@@ -232,7 +232,7 @@ sleep 2
 sed "s/$PORT_NODE/$((PORT_NODE+2))/; s/\"port\":$PORT_SOCKS/\"port\":$((PORT_SOCKS+2))/" "$E2E/node/client.json" > "$E2E/node/client-stock.json"
 nohup "$XRAY" run -c "$E2E/node/client-stock.json" >"$E2E/logs/client-stock.log" 2>&1 &
 sleep 2
-stock=$(curl -sS --max-time 10 --socks5-hostname 127.0.0.1:$((PORT_SOCKS+2)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+stock=$(curl -sS --max-time 10 --socks5 127.0.0.1:$((PORT_SOCKS+2)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
 echo "  对照结果: ${stock:-<empty>}"
 echo "$stock" | grep -q hello-e2e && ok "6b 纯净 Xray 全链路通（问题在我们节点）" || bad "6b 纯净 Xray 也不通（环境/源站问题）"
 
@@ -251,7 +251,7 @@ sed "s/$UUID/00000000-0000-0000-0000-000000000000/" "$E2E/node/client.json" > "$
 sed -i "s/\"port\":$PORT_SOCKS/\"port\":$((PORT_SOCKS+1))/" "$E2E/node/client-bad.json"
 nohup "$XRAY" run -c "$E2E/node/client-bad.json" >"$E2E/logs/client-bad.log" 2>&1 &
 sleep 2
-if curl -sS --max-time 8 --socks5-hostname 127.0.0.1:$((PORT_SOCKS+1)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" >/dev/null 2>&1; then
+if curl -sS --max-time 8 --socks5 127.0.0.1:$((PORT_SOCKS+1)) "http://127.0.0.1:$PORT_ORIGIN/small.txt" >/dev/null 2>&1; then
   bad "8 未知 UUID 竟然通了"
 else
   ok "8 未知 UUID 被拒（闸门/内核鉴权）"
