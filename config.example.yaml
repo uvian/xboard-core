@@ -25,3 +25,6 @@ API:
 Kernel:
   Xray: true       # vless/vmess/trojan/ss2022 + REALITY + xhttp
   Singbox: false   # anytls/tuic/hysteria2（M1 接入）
+# 面板 ws_url 用自签证书时才需要（默认 false：配置下发链路里带 token，别全局放开校验）
+# Node: { WsInsecure: false }
+

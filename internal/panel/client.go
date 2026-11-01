@@ -106,6 +106,21 @@ func (c *Client) Config(ctx context.Context) (*NodeConfig, bool, error) {
 	return &out, true, nil
 }
 
+// AdoptConfig 把 WS 推送来的 sync.config 载荷解成 NodeConfig，走和 REST 完全相同的
+// 归一化（Tag、Raw）。面板推送用的是同一个 buildNodeConfig，所以不需要第二套解析。
+func (c *Client) AdoptConfig(raw []byte) (*NodeConfig, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("config: 空载荷")
+	}
+	var out NodeConfig
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("config: decode push: %w", err)
+	}
+	out.Raw = append(out.Raw[:0], raw...)
+	out.Tag = c.Tag()
+	return &out, nil
+}
+
 // Users 拉可用用户。返回 nil, nil 表示 304（没变）。
 //
 // 面板 master 的 user() 直接 response($response)，并不看 X-Response-Format；

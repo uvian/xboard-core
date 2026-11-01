@@ -30,14 +30,19 @@ type NodeConf struct {
 	Timeout   int    `mapstructure:"Timeout"`   // 秒，默认 15
 	Retry     int    `mapstructure:"Retry"`     // 默认 3
 	PullEvery int    `mapstructure:"PullEvery"` // 秒，默认 60；WS 推送可用时降级为兜底
+	// WSInsecure 只在面板的 ws_url 用自签证书时需要打开。
+	// 单独一个开关而不是全局 InsecureSkipVerify：TLS 校验一旦全局关掉，
+	// 配置下发这条链路（token 就在里面）就没有任何保护了。
+	WSInsecure bool `mapstructure:"WsInsecure"`
 }
 
 type MachineConf struct {
-	Enabled   bool   `mapstructure:"Enabled"`
-	MachineID int    `mapstructure:"MachineID"`
-	NodeIDs   []int  `mapstructure:"NodeIDs"`
-	Token     string `mapstructure:"Token"`
-	APIHost   string `mapstructure:"ApiHost"`
+	Enabled    bool   `mapstructure:"Enabled"`
+	WSInsecure bool   `mapstructure:"WsInsecure"`
+	MachineID  int    `mapstructure:"MachineID"`
+	NodeIDs    []int  `mapstructure:"NodeIDs"`
+	Token      string `mapstructure:"Token"`
+	APIHost    string `mapstructure:"ApiHost"`
 }
 
 type APIConf struct {

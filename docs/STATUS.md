@@ -128,9 +128,30 @@ php -l app/Http/Requests/Admin/ServerSave.php
 **仍未做（已知、明确）**
 
 1. `Admit` 对空 `email` 放行 —— 匿名入站（socks/http）没有身份可比，这是设计约束；**副作用**：vless 的 `fallbacks` 转发进来的连接不带 email，会绕过设备数/限速。
-2. WS `sync.*` 客户端未实现（`main.go:handshake` 只探测），配置/用户变动仍靠 ≤60s 轮询。
-3. 机器模式的 `sync.nodes`、`sync.devices` 事件未消费。
-4. `metrics.ActiveConns` 无递增点（当前恒 0，`report` 里改用在线数）。
-5. ECH 只解析不使用。
-6. PHP 侧补丁未 `php -l`，也未与真实面板联调。
+2. `metrics.ActiveConns` 无递增点（当前恒 0，`report` 里改用在线数）。
+3. ECH 只解析不使用。
+4. PHP 侧补丁未 `php -l`，也未与真实面板联调。
+5. `sync.devices` 只记 debug：设备状态由本节点 gate 按连接自管，回灌会和自见冲突（面板侧那份用于它自己的展示）。
+
+## 6. WS 推送（M2 完成）
+
+面板 `ws-server`（Workerman，默认 8076）存在，`handshake` 会回 `{websocket:{enabled,ws_url}}`。节点侧已实现完整客户端：
+
+| 方向 | 事件 | 处理 |
+| --- | --- | --- |
+| 面板 → 节点 | `auth.success` | 记 debug |
+| | `sync.config` | `AdoptConfig` 解成 `NodeConfig` → `apply(..., changed=true)`，按 `finger()` 决定重建还是热更 |
+| | `sync.users` | 全量替换，走 `apply()` 的 diff 分支 |
+| | `sync.user.delta`（`action=add/update/remove`） | `applyDelta()`：只动受影响用户，uuid/限额缺失时用本地快照补齐 |
+| | `sync.devices` | 忽略（见未做 5） |
+| | `sync.nodes`（机器模式） | supervisor 增删 runner |
+| | `ping` | 回 `{"event":"pong"}` |
+| | `error` | 返回错误 → 重连 |
+| 节点 → 面板 | `pong` | 心跳 |
+| | 帧级 `ping` | 客户端每 30s 主动探活（面板 55s 才 ping 一次，读超时 90s） |
+
+- 自研最小 RFC6455 客户端（`internal/wsclient`，250 行）：校验 `Sec-WebSocket-Accept`、帧掩码、控制帧不分片、分片重组、16MB 上限；不引第三方依赖。
+- 推送在线时轮询退化为 **300s 兜底**（防"事件丢了"），掉线立刻回到面板配置的 `pull_interval`。重连指数退避 2s→30s，连满 30s 后退避归零。
+- 连接建立后立刻补一次 `pullOnce`，避免"连上了但推送刚好丢了"要等 300s。
+- 自签证书：`Node.WsInsecure` / `Machine.WsInsecure` 单点开关，不做全局 `InsecureSkipVerify`——配置下发链路里带 token。
 

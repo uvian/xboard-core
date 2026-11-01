@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -57,19 +58,17 @@ func run() error {
 	g.OnReject(func(error) { mx.GateRejects.Add(1) })
 	// 机器模式下的 token 是"机器"身份，但面板 V2 每个请求仍要 node_id，
 	// 所以一个机器管 N 个节点 = N 条独立 runner（各自 tag / 计数器 / 内核实例）。
-	var runners []*runner
-	if cfg.Machine.Enabled {
-		for _, nid := range cfg.Machine.NodeIDs {
-			c := panel.NewMachine(cfg.Machine.APIHost, fmt.Sprint(cfg.Machine.MachineID), nid, cfg.Machine.Token, cfg.Timeout())
-			runners = append(runners, newRunner(cfg, c, g, mx))
-		}
-	} else {
-		c := panel.New(cfg.Node.APIHost, cfg.Node.NodeID, cfg.Node.APIKey, cfg.Timeout())
-		runners = append(runners, newRunner(cfg, c, g, mx))
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	sup := &supervisor{cfg: cfg, gate: g, metrics: mx, baseCtx: ctx,
+		runners: map[int]*runner{}, cancels: map[int]context.CancelFunc{}}
+	if cfg.Machine.Enabled {
+		// 面板可能在运行中改"这台机器管哪些节点"（sync.nodes），由 supervisor 增删。
+		sup.reconcile(ctx, cfg.Machine.NodeIDs)
+	} else {
+		sup.spawn(0, panel.New(cfg.Node.APIHost, cfg.Node.NodeID, cfg.Node.APIKey, cfg.Timeout()))
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.API.Listen,
@@ -83,22 +82,106 @@ func run() error {
 	}()
 	defer srv.Shutdown(context.Background())
 
-	for _, r := range runners {
-		r.handshake(ctx)
-	}
+	<-ctx.Done()
+	sup.stopAll()
+	sup.wg.Wait()
+	return nil
+}
 
-	errs := make(chan error, len(runners))
-	for _, r := range runners {
-		r := r
-		go func() { errs <- r.loop(ctx) }()
+// supervisor 管一批 runner 的生命周期。单节点模式只有 key=0 一条；
+// 机器模式每条节点一个 key，面板推 sync.nodes 时在这里增删。
+type supervisor struct {
+	cfg     *config.Conf
+	gate    *gate.Gate
+	metrics *metrics.Registry
+	baseCtx context.Context
+
+	mu      sync.Mutex
+	runners map[int]*runner
+	cancels map[int]context.CancelFunc
+	wg      sync.WaitGroup
+}
+
+func (s *supervisor) spawn(key int, client *panel.Client) {
+	r := newRunner(s.cfg, client, s.gate, s.metrics)
+	if s.cfg.Machine.Enabled {
+		r.onNodes = s.reconcile
 	}
-	var first error
-	for range runners {
-		if err := <-errs; err != nil && first == nil {
-			first = err
+	rctx, cancel := context.WithCancel(s.baseCtx)
+
+	s.mu.Lock()
+	s.runners[key] = r
+	s.cancels[key] = cancel
+	s.mu.Unlock()
+
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		// handshake 可能慢（面板没起、证书不对），放 goroutine 里免得卡住 reconcile。
+		r.handshake(rctx)
+		if err := r.loop(rctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("runner stopped", "node", key, "err", err)
+		}
+	}()
+	slog.Info("runner scheduled", "node", key)
+}
+
+func (s *supervisor) stop(key int) {
+	s.mu.Lock()
+	cancel := s.cancels[key]
+	delete(s.cancels, key)
+	delete(s.runners, key)
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel() // loop 退出时会关内核
+	}
+	slog.Info("runner stopped", "node", key)
+}
+
+func (s *supervisor) stopAll() {
+	s.mu.Lock()
+	keys := make([]int, 0, len(s.cancels))
+	for k := range s.cancels {
+		keys = append(keys, k)
+	}
+	s.mu.Unlock()
+	for _, k := range keys {
+		s.stop(k)
+	}
+}
+
+func (s *supervisor) has(key int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.runners[key]
+	return ok
+}
+
+// reconcile 让运行中的 runner 集合与面板下发的节点列表对齐。
+func (s *supervisor) reconcile(_ context.Context, ids []int) {
+	want := make(map[int]struct{}, len(ids))
+	for _, id := range ids {
+		want[id] = struct{}{}
+	}
+	s.mu.Lock()
+	current := make([]int, 0, len(s.runners))
+	for k := range s.runners {
+		current = append(current, k)
+	}
+	s.mu.Unlock()
+
+	for _, k := range current {
+		if _, ok := want[k]; !ok {
+			s.stop(k)
 		}
 	}
-	return first
+	for _, id := range ids {
+		if s.has(id) {
+			continue
+		}
+		c := panel.NewMachine(s.cfg.Machine.APIHost, fmt.Sprint(s.cfg.Machine.MachineID), id, s.cfg.Machine.Token, s.cfg.Timeout())
+		s.spawn(id, c)
+	}
 }
 
 // newRunner 每个节点一条：独立的内核实例、流量计数器与标签。
@@ -113,6 +196,7 @@ func newRunner(cfg *config.Conf, c *panel.Client, g *gate.Gate, mx *metrics.Regi
 		since:    time.Now(),
 		pull:     time.Duration(cfg.Node.PullEvery) * time.Second,
 		resched:  make(chan time.Duration, 1),
+		wsUp:     make(chan bool, 1),
 	}
 }
 
@@ -132,21 +216,37 @@ type runner struct {
 
 	// resched 让面板下发的 base_config.pull_interval 能改本地节奏（面板改配置不用重启节点）。
 	resched chan time.Duration
+
+	// wsURL 为空表示面板没开推送（或 handshake 失败），此时纯轮询。
+	wsURL      string
+	wsInsecure bool
+	// wsUp 由 socket goroutine 通知"推送通道是否在线"，在线时轮询退化为兜底。
+	wsUp chan bool
+	// applyMu 串行化"应用配置/用户"的逻辑：WS 事件与兜底轮询会同时到达。
+	applyMu sync.Mutex
+	// onNodes 只在机器模式用到：面板推 sync.nodes 时通知上层增删 runner。
+	onNodes func(ctx context.Context, ids []int)
 }
 
-// handshake 只用来判断面板是否开了 WS 推送。开与不开都走轮询，不影响正确性：
-// WS 只是把 pull 间隔拉长，省掉无意义的 config/user 请求。
+// handshake 问面板要不要走 WS 推送。拿不到就纯轮询，正确性不受影响：
+// WS 只把轮询间隔拉长到兜底值，省掉无意义的 config/user 请求（见 socket.go）。
 func (r *runner) handshake(ctx context.Context) {
 	h, err := r.client.Handshake(ctx)
 	if err != nil {
 		slog.Debug("handshake failed, polling only", "err", err)
 		return
 	}
-	if h.Websocket.Enabled {
-		// TODO(M2): 接 sync.config / sync.users / sync.user.delta / sync.devices 四个事件，
-		// 收到事件后再 pull，把 PullEvery 拉到 300s 兜底。
-		slog.Info("panel offers websocket push (polling still in use)", "ws_url", h.Websocket.WSURL)
+	if !h.Websocket.Enabled {
+		return
 	}
+	url := h.Websocket.WSURL
+	if url == "" {
+		slog.Warn("panel reports ws enabled but ws_url is empty, polling only")
+		return
+	}
+	r.wsURL = url
+	r.wsInsecure = r.cfg.Node.WSInsecure
+	slog.Info("panel offers websocket push", "ws_url", url)
 }
 
 func (r *runner) loop(ctx context.Context) error {
@@ -160,6 +260,9 @@ func (r *runner) loop(ctx context.Context) error {
 
 	if err := r.pullOnce(ctx); err != nil {
 		slog.Warn("initial pull failed", "err", err)
+	}
+	if r.wsURL != "" {
+		go r.socket(ctx)
 	}
 	for {
 		select {
@@ -178,6 +281,17 @@ func (r *runner) loop(ctx context.Context) error {
 			tick.Reset(every)
 			reportTick.Reset(reportEvery(every))
 			slog.Info("pull interval updated by panel", "every", every.String())
+		case up := <-r.wsUp:
+			// 推送在线时把轮询退成兜底（防"事件丢了"）；掉线立刻回到面板配置的节奏。
+			every := r.pull
+			if up {
+				every = wsPollFallback
+				if r.pull > every {
+					every = r.pull
+				}
+			}
+			tick.Reset(every)
+			reportTick.Reset(reportEvery(every))
 		case <-reportTick.C:
 			if err := r.report(ctx); err != nil {
 				slog.Warn("report", "err", err)
@@ -209,6 +323,16 @@ func (r *runner) pullOnce(ctx context.Context) error {
 		// 304：面板说用户没变，沿用本地快照。
 		users = r.users
 	}
+	return r.apply(ctx, node, users, changed)
+}
+
+// apply 是唯一改内核/闸门状态的地方，由 applyMu 串行化（WS 事件与轮询会撞车）。
+func (r *runner) apply(ctx context.Context, node *panel.NodeConfig, users []panel.UserInfo, changed bool) error {
+	r.applyMu.Lock()
+	defer r.applyMu.Unlock()
+	if node == nil {
+		return nil
+	}
 	r.applyPanelIntervals(node)
 
 	if !changed && r.kernel != nil && sameUsers(r.users, users) {
@@ -216,9 +340,14 @@ func (r *runner) pullOnce(ctx context.Context) error {
 	}
 	r.metrics.LastPullOK.Store(time.Now().Unix())
 
-	k, err := r.registry.For(node.Protocol)
-	if err != nil {
-		return err
+	// 内核实例只取一次：已启动的直接复用，未启动的按协议向 registry 要。
+	// （registry 里每个内核只有一个实例，这里显式区分是为了不依赖那个事实。）
+	k := r.kernel
+	if k == nil {
+		var err error
+		if k, err = r.registry.For(node.Protocol); err != nil {
+			return err
+		}
 	}
 
 	switch {
