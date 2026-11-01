@@ -342,10 +342,15 @@ func (r *runner) loop(ctx context.Context) error {
 }
 
 func reportEvery(pull time.Duration) time.Duration {
-	// 面板 base_config.push_interval 优先；这里只做本地兜底（≥10s，防抖）。
+	// 面板 base_config.push_interval 优先；这里只做本地兜底（≥10s 防抖，≤60s 保证
+	// 面板侧 u/d、在线数与负载不会长时间不更新——WS 在线时轮询会退成兜底值，
+	// 但上报节奏不能跟着退，否则面板会认为节点数据停了）。
 	d := pull / 2
 	if d < 10*time.Second {
 		d = 10 * time.Second
+	}
+	if d > 60*time.Second {
+		d = 60 * time.Second
 	}
 	return d
 }

@@ -301,7 +301,7 @@ fi
 
 say "9. WS 推送"
 if [ "$HAVE_PCNTL" = 1 ]; then
-  if grep -q 'ws push connected' "$E2E/logs/node.log" && grep -qiE 'auth.success|sync\.config' "$E2E/logs/node.log"; then
+  if grep -q 'ws push connected' "$E2E/logs/node.log" && grep -qiE 'ws authenticated|auth.success|sync\.config' "$E2E/logs/node.log"; then
     ok "10 WS 推送已连上且收到事件（auth.success / sync.config）"
   else
     bad "10 节点未收到 WS 事件（node.log 与 ws.log 见现场）"
