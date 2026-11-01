@@ -97,6 +97,9 @@ app(App\Support\Setting::class)->save([
 \$u = App\Models\User::firstOrNew(['email' => 'u1@e2e.test']);
 \$u->fill(['password' => bcrypt('e2e-pass'), 'uuid' => '$UUID', 'transfer_enable' => 1099511627776,
           'device_limit' => 3, 'speed_limit' => 0, 'group_id' => 1, 'banned' => 0, 'is_admin' => 0,
+          // expired_at 必须显式给未来时间：面板 getAvailableUsers 用的是 orWhere('expired_at', NULL)，
+          // 生成的是 expired_at = NULL，永远不会匹配，NULL 过期的用户不会被下发。
+          'expired_at' => time() + 86400 * 30,
           'token' => Illuminate\Support\Str::random(32)])->save();
 \$s = App\Models\Server::firstOrNew(['id' => $NODE_ID]);
 \$s->fill(['type' => 'vless', 'name' => 'e2e-vless-tcp', 'group_ids' => [1], 'host' => '127.0.0.1',

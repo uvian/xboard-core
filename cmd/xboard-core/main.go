@@ -389,6 +389,12 @@ func (r *runner) apply(ctx context.Context, node *panel.NodeConfig, users []pane
 		r.metrics.Users.Store(int64(len(users)))
 		slog.Info("kernel started", "kernel", k.Name(), "protocol", node.Protocol,
 			"tag", node.Tag, "network", node.Network, "port", node.ServerPort, "users", len(users))
+		if len(users) == 0 {
+			// 面板不下发用户时入站照常监听，但任何连接都会因未知 UUID 被拒，
+			// 现场很像"节点起来了却没人能连"——必须喊出来，而不是静默空转。
+			slog.Warn("node has no users from panel; every connection will be rejected",
+				"node", node.Tag, "hint", "check group_ids / transfer_enable / expired_at / banned")
+		}
 
 	case finger(r.node) != finger(node):
 		r.metrics.Reloads.Add(1)
