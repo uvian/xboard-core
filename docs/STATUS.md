@@ -381,6 +381,19 @@ E2E 里 5c/6b 两条断言原来 `grep -q "blocked target"`，升级内核后直
 验证结果：`e2e` run **43593104556**（提交 `74d5f64`）在 ubuntu-latest 上 **PASS=23 FAIL=0**，其中
 `PASS 6d mihomo v1.19.34 REALITY 握手成功并取到源站`、`PASS 6e 反向对照成立：不带 support-x25519mlkem768 时 REALITY 认证失败`。
 
+加入第 10 节（面板后向兼容）后：`e2e` run **43593858372**，**PASS=26 FAIL=0**，新增的三条是
+
+```
+PASS 10 旧格式 REALITY 节点写入成功（模拟改造前保存的数据）
+PASS 10 旧格式节点仍能下发 config（补丁对已有数据是纯增量）
+PASS 10 补丁未新增/修改 database/migrations（升级不改 schema，protocol_settings 仍是 JSON 列）
+```
+
+前两条来自"造一个只有 `server_name/dest/server_port/private_key/public_key/short_id` 的旧格式节点，
+再读 `/api/v2/server/config`"：说明**从原版升级到打补丁的版本，库里已有的 REALITY 节点不会失效、配置不会丢**。
+第三条来自 `git apply --numstat <patch> | grep -c '^database/migrations/'` 必须为 0：
+补丁不碰表结构，所以线上升级路径仍是原版的 `php artisan xboard:update`（只跑已有迁移）。
+
 ### 9.7 mihomo 系客户端连不上 REALITY：根因与处置（2026-11-14）
 
 E2E 6d 最初一直失败：`mihomo.log` 反复 `REALITY authentication failed`，同一时刻 xray 客户端用同一个节点成功。`node2.log` 对应的是
