@@ -18,6 +18,7 @@
 #  11 REALITY：面板 reality_settings（DB snake_case）→ 面板归一化 → 节点 → REALITY 客户端真实握手
 #  12 mihomo 回归：mihomo 作为客户端过 REALITY（FlClash / Clash Verge Rev / Nikki 同一内核）
 #  13 反向对照：不带 support-x25519mlkem768 的 mihomo 必须认证失败（证明这是客户端侧必需项）
+#  14 后向兼容：改造前保存的 REALITY 节点（无 xver/mldsa65_seed/short_ids）仍能下发，且补丁不动 database/migrations
 set -uo pipefail
 
 E2E=${E2E:-/opt/xboard-e2e}
@@ -503,6 +504,53 @@ else
   printf '  [33mSKIP[0m 10 本机 PHP 无 pcntl，WS 服务起不来
 '
 fi
+
+if [ -n "$RPRIV" ] && [ -n "$RDEST" ]; then
+  say "10. 面板补丁的后向兼容：旧格式 reality_settings（只有 server_name/dest/short_id/private_key）仍能下发"
+
+  # “从原版升级上来”的关键场景：库里躺着改造前保存的 REALITY 节点，只有老字段，
+  # 没有 xver / mldsa65_seed / server_names / short_ids 数组。打补丁后必须照常下发。
+  cat > "$E2E/panel/e2e_seed_legacy.php" <<PHP
+<?php
+require __DIR__.'/vendor/autoload.php';
+\$app = require __DIR__.'/bootstrap/app.php';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+\$s = App\Models\Server::firstOrNew(['id' => 3]);
+\$s->fill(['type' => 'vless', 'name' => 'e2e-legacy-reality', 'group_ids' => [1], 'host' => '127.0.0.1',
+          'port' => $((PORT_NODE+2)), 'server_port' => $((PORT_NODE+2)), 'show' => 1, 'enabled' => 1, 'rate' => 1,
+          'protocol_settings' => ['tls' => 2, 'network' => 'tcp', 'flow' => null,
+            'encryption' => ['enabled' => false, 'decryption' => null],
+            'reality_settings' => ['server_name' => '$RDEST', 'dest' => '$RDEST:443',
+              'server_port' => 443, 'private_key' => '$RPRIV', 'public_key' => '$RPUB',
+              'short_id' => '0123abcd']]])->save();
+echo "seeded legacy reality server=".\$s->id.PHP_EOL;
+PHP
+
+  if php "$E2E/panel/e2e_seed_legacy.php" >"$E2E/logs/seed-legacy.log" 2>&1; then
+    ok "10 旧格式 REALITY 节点写入成功（模拟改造前保存的数据）"
+    lcfg=$(curl -sS "http://127.0.0.1:$PORT_PANEL/api/v2/server/config?node_id=3&token=$TOKEN" || true)
+    if echo "$lcfg" | grep -q '"tls":2' && echo "$lcfg" | grep -q "$RPUB"; then
+      ok "10 旧格式节点仍能下发 config（补丁对已有数据是纯增量）"
+    else
+      bad "10 旧格式节点下发失败：$(echo "$lcfg" | head -c 200)"
+    fi
+  else
+    bad "10 旧格式 REALITY 节点写入失败：$(tail -3 "$E2E/logs/seed-legacy.log" | tr '\n' ' ')"
+  fi
+
+  # 补丁不许碰数据库结构：升级路径是 `php artisan xboard:update`（只跑 migrate），
+  # 多出来的迁移文件会改变升级路径；protocol_settings 是 JSON 列，新字段不需要迁移。
+  MIGN=$(git apply --numstat "$E2E/core/panel-patch/0001-reality-schema-and-transport-guard.patch" 2>/dev/null \
+         | awk '{print $3}' | grep -c '^database/migrations/' || true)
+  if [ "${MIGN:-0}" -eq 0 ]; then
+    ok "10 补丁未新增/修改 database/migrations（升级不改 schema，protocol_settings 仍是 JSON 列）"
+  else
+    bad "10 补丁动了 database/migrations（$MIGN 个文件），升级路径不再纯净"
+  fi
+else
+  printf '  \033[33mSKIP\033[0m 10 没有 REALITY 密钥/dest，跳过后向兼容检查\n'
+fi
+
 
 say "结果"
 printf '  PASS=%d FAIL=%d\n  E2E 目录：%s（日志在 %s/logs）\n' "$PASS" "$FAIL" "$E2E" "$E2E"
