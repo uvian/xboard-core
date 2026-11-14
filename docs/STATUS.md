@@ -450,7 +450,7 @@ xray 在日志里只打前半段）—— 服务端主动丢弃，不是我们�
 —— 这条现在两端都有证据。
 
 
-### 9.6 仍未做（明确列着）
+### 9.9 仍未做（明确列着）
 
 - `usergate` 的 UDP 会话（UoT）与 TCP 分别计数，`active_conns` 语义按"链路"而非"用户连接"；
 - 机器模式的 `sync.nodes` / `sync.devices` 只做 runner 增删，`sync.devices` 仍未消费；
