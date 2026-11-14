@@ -1,5 +1,5 @@
 diff --git a/app/Http/Requests/Admin/ServerSave.php b/app/Http/Requests/Admin/ServerSave.php
-index ac5b957..c6f98ae 100644
+index ac5b957..170310e 100644
 --- a/app/Http/Requests/Admin/ServerSave.php
 +++ b/app/Http/Requests/Admin/ServerSave.php
 @@ -39,6 +39,14 @@ class ServerSave extends FormRequest
@@ -9,9 +9,9 @@ index ac5b957..c6f98ae 100644
 +        'reality_settings.dest' => 'nullable|string',
 +        'reality_settings.server_names' => 'nullable|array',
 +        'reality_settings.short_ids' => 'nullable|array',
-+        'reality_settings.mldsa65_seed' => 'nullable|string|size:43',
-+        'reality_settings.xver' => 'nullable|integer|in:0,1,2',
-+        'reality_settings.max_time_diff' => 'nullable|integer|min:0',
++        'reality_settings.mldsa65_seed' => ['nullable', 'string', 'regex:/^[A-Za-z0-9_-]{43}$/'],
++        'reality_settings.xver' => 'nullable|in:0,1,2',
++        'reality_settings.max_time_diff' => 'nullable|numeric|min:0',
 +        'reality_settings.min_client_ver' => ['nullable', 'string', 'regex:/^\d{1,3}(\.\d{1,3}){2}$/'],
 +        'reality_settings.max_client_ver' => ['nullable', 'string', 'regex:/^\d{1,3}(\.\d{1,3}){2}$/'],
      ];
