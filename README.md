@@ -11,22 +11,6 @@
 > [SECURITY.md](SECURITY.md)（威胁模型 / 安全默认值 / 攻击面与防护 / 部署清单）
 > [docs/PANEL-IMPROVEMENTS.md](docs/PANEL-IMPROVEMENTS.md)（面板更长期的改造清单）
 
-## 为什么不是继续用现成的两个
-
-| 维度 | Xboard-Node（dev 2026-04） | v2node（2026-10） | 本项目 |
-|---|---|---|---|
-| 内核版本 | fork 冻结在 v26.3.27 | v26.9.30 | **v26.11.9**（含 MPTCP 默认关闭） |
-| 设备数/限速 | `//go:linkname` 劫持未导出注册表 | 复制整个 dispatcher 包到自身模块 | **单补丁 `app/usergate`（3 处 hunk）** |
-| 协议面 | vless/vmess/trojan/ss/hysteria2/tuic/anytls（xray+sing-box） | vless/vmess/trojan/ss/hysteria2/tuic/**anytls**，含 **VLESS encryption / mldsa65Seed / xver** | xray 侧 vless/vmess/trojan/ss2022 + **完整 REALITY 硬化**；anytls/tuic/hysteria2 交 sing-box（**零协议补丁**） |
-| 传输 | ws/grpc/httpupgrade/**h2(已删)**/xhttp | tcp/ws/grpc/httpupgrade/xhttp | **xhttp 优先，h2/quic 编译期拒绝** |
-| 推送 | WS handshake 推送 | 仅轮询（ETag + msgpack） | WS 推送 + 轮询回退 |
-| 证书 | certmagic + 21 个 libdns provider | lego | certmagic + libdns（沿用 xbn 方案） |
-| 机器模式 | 支持（多节点/单进程） | 单进程多 Nodes | 支持 |
-
-关键结论：两个项目的**真正分歧不在功能，而在"怎么把自己插进 xray 的数据面"**。
-- xbn 选 linkname（补丁最少，但依赖未导出符号）；
-- v2node 选整体复制 dispatcher（自包含，但要跟同步 700 行上游改动）；
-- 本项目选第三条：**在 vendor 的 xray 里加一个 `app/usergate` 包 + 3 处 hunk**，数据面语义由 xray 自己的 dispatcher 承担，闸门只做 `Admit`/`Limit` 两个纯函数。
 
 ## 目录
 
