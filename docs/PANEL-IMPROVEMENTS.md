@@ -19,13 +19,19 @@
 
 **改动**（`app/Http/Requests/Admin/ServerSave.php` + `app/Models/Server.php:291` 的 protocol_settings 校验 + 服务端渲染）：
 ```php
-// ServerSave.php 增加
-'mldsa65Seed'     => ['nullable', 'string', 'size:64'],   // 32 字节 hex
-'xver'            => ['nullable', 'integer', 'in:0,1,2'],
-'maxTimeDiff'     => ['nullable', 'integer', 'min:0', 'max:600'],
-'limitFallbackUp' => ['nullable', 'integer', 'min:0'],
-'limitFallbackDown' => ['nullable', 'integer', 'min:0'],
+// ServerSave.php 新增（DB/表单是 snake_case；节点契约发出去时才转 camelCase）
+'reality_settings.mldsa65_seed'  => ['nullable', 'string', 'regex:/^[A-Za-z0-9_-]{43}$/'],
+'reality_settings.xver'          => 'nullable|in:0,1,2',        // 不写 integer，容忍 UI 传字符串
+'reality_settings.max_time_diff' => 'nullable|numeric|min:0',
+'reality_settings.min_client_ver'=> ['nullable', 'string', 'regex:/^\d{1,3}(\.\d{1,3}){2}$/'],
+'reality_settings.max_client_ver'=> ['nullable', 'string', 'regex:/^\d{1,3}(\.\d{1,3}){2}$/'],
+'reality_settings.dest'          => 'nullable|string',
+'reality_settings.server_names'  => 'nullable|array',
+'reality_settings.short_ids'     => 'nullable|array',
 ```
+
+`mldsa65_seed` 是 **43 字符 base64url**（Xray 用 `base64.RawURLEncoding.DecodeString` 并要求解出正好 32 字节，见
+`infra/conf/transport_security.go` 的 `invalid "mldsa65Seed"` 分支），不是 hex、不是 64 位；写 `size:64` 会把合法值挡掉。
 并在 `ServerService::getServer()` 的 reality 分支把这些字段透传（键名与后端 `panel.TLSSettings` 一致：`mldsa65Seed`/`xver` 用字符串形式，`xver` 走 `,string`）。
 
 **同时加的校验**（后端已前置校验，面板做一层 UX）：`short_ids` 非空、`dest` 必填、`private_key` 长度合法。
