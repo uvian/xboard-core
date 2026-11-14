@@ -60,6 +60,31 @@ index c65754d..55b748e 100644
              ]
          ]
      ];
+diff --git a/app/Protocols/ClashMeta.php b/app/Protocols/ClashMeta.php
+index f76cc8a..85ee71c 100644
+--- a/app/Protocols/ClashMeta.php
++++ b/app/Protocols/ClashMeta.php
+@@ -437,7 +437,11 @@ class ClashMeta extends AbstractProtocol
+                 $array['servername'] = data_get($protocol_settings, 'reality_settings.server_name');
+                 $array['reality-opts'] = [
+                     'public-key' => data_get($protocol_settings, 'reality_settings.public_key'),
+-                    'short-id' => data_get($protocol_settings, 'reality_settings.short_id')
++                    'short-id' => data_get($protocol_settings, 'reality_settings.short_id'),
++                    // mihomo/Clash 系（FlClash、Clash Verge Rev、Nikki 等）默认不发 X25519MLKEM768 密钥共享，
++                    // 而 Xray 26.x 的 REALITY 服务端会直接丢弃这类 ClientHello（认证失败后静默回落 dest）。
++                    // 这里显式开启，等价于客户端写 support-x25519mlkem768: true。
++                    'support-x25519mlkem768' => true
+                 ];
+                 self::appendUtls($array, $protocol_settings);
+                 break;
+@@ -532,6 +536,7 @@ class ClashMeta extends AbstractProtocol
+                 $array['reality-opts'] = [
+                     'public-key' => data_get($protocol_settings, 'reality_settings.public_key'),
+                     'short-id' => data_get($protocol_settings, 'reality_settings.short_id'),
++                    'support-x25519mlkem768' => true
+                 ];
+                 break;
+             default: // Standard TLS
 diff --git a/app/Services/ServerService.php b/app/Services/ServerService.php
 index 1271b92..1a1413b 100644
 --- a/app/Services/ServerService.php

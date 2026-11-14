@@ -364,6 +364,40 @@ gh workflow run e2e.yml --repo uvian/xboard-core
   在 `component/tls/reality.go:74-76` 写死自报版本 `1.8.2`，一旦上游（或我们的默认值）把
   `minClientVer` 设成 ≥26.x，这条断言会立刻红。
 
+### 9.5.1 本轮踩到的两个坑（写下来免得下次重踩）
+
+**坑一：v26.11.9 改了 freedom 的日志文案。**
+v26.10.31 是 `proxy/freedom: blocked target: tcp:127.0.0.1:8081, blackholing connection for 58s`，
+v26.11.9 变成 `proxy/freedom: target blocked by a finalrule: tcp:127.0.0.1:8081, blackholing connection for 33s`。
+E2E 里 5c/6b 两条断言原来 `grep -q "blocked target"`，升级内核后直接假失败。
+**教训**：断言不要绑死上游日志文案；实在要绑就写成一个正则，并且在升级内核时把它当"契约"一起复查。
+
+**坑二：mihomo 的就绪探测把自己打死了。**
+6d 最初用 `curl http://127.0.0.1:$MPORT` 等 mihomo 起来，但 mihomo 的 rules 是 `MATCH,e2e-reality`：
+这个请求被节点拨回同一台机器的同一个端口，于是 mihomo 自己连自己，形成握手风暴，
+把 mihomo 与后端一起拖垮，随后真正的断言拿到空响应。
+**教训**：探活永远不要穿过被测代理去打它自己；看端口在不在听（`ss`）就够了。
+
+### 9.7 mihomo 系客户端连不上 REALITY：根因与处置（2026-11-14）
+
+E2E 6d 最初一直失败：`mihomo.log` 反复 `REALITY authentication failed`，同一时刻 xray 客户端用同一个节点成功。`node2.log` 对应的是
+`transport/internet/tcp: REALITY: processed invalid connection from ...: authentication failed` —— 服务端主动丢弃，不是我们的配置/闸门。
+
+根因（逐行读 `xtls/reality@v0.0.0-20261108101329-4bb46b2afd8b/tls.go`）：
+
+- 服务端在 `tls.go:217-235` 遍历 ClientHello 的 keyShares，只有看到 **X25519MLKEM768** 才把 `keyShare.data[mlkem.EncapsulationKeySize768:]` 存进 `peerPub2`；
+- 紧接着 `if peerPub2 == nil { break }`，注释原文 `// reject outdated/strange Client Hello that doesn't have X25519MLKEM768 before optional X25519`；
+- 也就是说 **没有 MLKEM768 密钥共享的 ClientHello 一律不进入认证分支**，`hs.c.conn != conn`，最后统一报 `authentication failed or validation criteria not met`（`tls.go:484`）并回落 `dest`。
+- mihomo 默认**不发送** MLKEM768：`component/tls/reality.go:58` 的 `if !realityConfig.SupportX25519MLKEM768 { BuildRemovedX25519MLKEM768HandshakeState(uConn) }`，运行时日志自证 `REALITY localAddr: ... is using X25519MLKEM768 for TLS' communication: false`。
+- 精确边界：`xtls/reality@v0.0.0-20260322125925`（Xray v26.7.11 / v26.7.28 用）只有 `if peerPub == nil`，MLKEM768 是可选项；从 `xtls/reality@v0.0.0-20260908062103`（**Xray v26.9.9 起**，含 v26.9.30 / v26.10.21 / v26.10.31 / v26.11.9）换成 `peerPub2` 并硬 `break`。也就是说：**REALITY 服务端只要升过 v26.9.9，默认配置的 mihomo 客户端就全部失效**，而 v26.7.x 及更早的节点一直是好的 —— 这与"升级内核后客户端全挂"的现象完全吻合。
+
+处置：
+
+1. **面板侧下发开关**（`panel-patch/0001-reality-schema-and-transport-guard.patch` 新增 hunk）：`app/Protocols/ClashMeta.php` 两处 `reality-opts` 补 `'support-x25519mlkem768' => true`。老版本 mihomo 忽略未知键，新版本从"必失败"变"能连上"，对订阅格式是纯增量。
+2. **E2E 双向断言**：6d 带开关 → 必须通；6e 去掉开关 → 必须失败且日志含 `REALITY authentication failed`。这样两边语义都被钉住，将来 mihomo 改默认值会在 CI 里直接暴露。
+3. 文档：`docs/PANEL-IMPROVEMENTS.md` P0-4、`SECURITY.md` §3.1 补一句 REALITY 的客户端前提。
+
+
 ### 9.6 仍未做（明确列着）
 
 - `usergate` 的 UDP 会话（UoT）与 TCP 分别计数，`active_conns` 语义按"链路"而非"用户连接"；

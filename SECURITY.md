@@ -52,6 +52,12 @@
   私网/回环/链路本地/未指定/组播地址。理由同上：回落目标是攻击者能借用的出站通道。
 - **sing-box 侧同规则**：`route.rules[].ip_cidr → reject`，`final: direct`。
 
+**REALITY 的客户端前提**：Xray v26.9.9 起的 REALITY 服务端只接受带 X25519MLKEM768 密钥共享的 ClientHello
+（`xtls/reality` `tls.go:233-235` 是硬 `break`）。mihomo 默认把它摘掉，所以 FlClash / Clash Verge Rev / Nikki
+必须拿到带 `reality-opts.support-x25519mlkem768: true` 的订阅配置才能连上，否则表现为 `REALITY authentication failed`
+（节点侧日志 `REALITY: processed invalid connection ...: authentication failed`）。我们的面板补丁已在
+`app/Protocols/ClashMeta.php` 两处 `reality-opts` 里下发该键（`docs/PANEL-IMPROVEMENTS.md` P0-4），E2E 6d/6e 双向验证。
+
 ### 3.2 数据面：设备数与限速
 
 - 闸门只有一处实现：`third_party/xray/app/usergate`（vendored 补丁），在
@@ -150,7 +156,11 @@ E2E 里与本文件直接对应的断言：
 4. **ECH 只解析不下发**：面板字段会被读入，但内核侧未接上。
 5. **面板补丁未做多节点灰度**：只在 E2E 单实例上验证过。
 6. **`fallbacks` 会绕过闸门**：见 §3.2 的 fail-open 说明。
-7. **不防面板数据库被脱**：UUID 泄漏后攻击者就是一个"合法用户"，只能靠设备数/限速/流量限额止损。
+7. **DNS 重绑定没有完全封死**：私网兜底走 router 的 `IpIfNonMatch`，判定用的是"规则匹配时解析到的地址"，
+   freedom 实际拨号时会**再解析一次**。理论上攻击者可以用 TTL=0 的域名，让两次解析拿到不同结果
+   （第一次公网、第二次内网）绕过拦截。要彻底封死得让出站固定到已校验的 IP（或在内核侧做
+   dialer 级校验），当前实现没做——虽然构造难度高，但知道比不知道好。
+8. **不防面板数据库被脱**：UUID 泄漏后攻击者就是一个"合法用户"，只能靠设备数/限速/流量限额止损。
 
 ---
 

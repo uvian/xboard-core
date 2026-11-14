@@ -1,6 +1,6 @@
 # Xboard 面板适用性优化清单
 
-针对 `cedar2025/Xboard`（master `e68fec50`，2026-10-29，无 release）。每条给出落点、现状证据、建议改动、验收标准。
+针对 `cedar2025/Xboard`（master `d826a3b`，2026-11-02，无 release）。每条给出落点、现状证据、建议改动、验收标准。
 
 ## P0-1 传输收敛：停发 h2/http/h3
 
@@ -39,6 +39,37 @@
 **改动**：在节点 REALITY 面板加一个默认关闭的开关 `minClientVer`（空 = 不下发），旁边写明后果；一旦下发，`/status` 上报里带上该值，便于事后定位"某批用户连不上"。
 
 **验收**：默认关闭；开启后有明显警告文案；后端 `buildReality` 保持不写该字段（由显式配置驱动）。
+
+## P0-4 mihomo 系客户端的 REALITY 必须下发 `support-x25519mlkem768`
+
+**现状**：`app/Protocols/ClashMeta.php:438-441`（订阅 proxies 段）与 `:532-535`（另一协议分支）生成的 `reality-opts` 只有 `public-key` + `short-id`。而 mihomo（FlClash / Clash Verge Rev / Nikki 的内核）默认**不发送** X25519MLKEM768 密钥共享 —— `component/tls/reality.go:58` 的 `if !realityConfig.SupportX25519MLKEM768 { BuildRemovedX25519MLKEM768HandshakeState(uConn) }` 会把 MLKEM768 从 ClientHello 摘掉，代码注释写的是"为了兼容老的 reality 服务端"。
+
+**为什么这会导致连不上**：Xray 侧 REALITY 服务端自 `xtls/reality@v0.0.0-20260908062103`（**Xray v26.9.9**）起，`tls.go:233-235`：
+
+```go
+if peerPub2 == nil {
+    break // reject outdated/strange Client Hello that doesn't have X25519MLKEM768 before optional X25519
+}
+```
+
+而在它之前的 `xtls/reality@v0.0.0-20260322125925`（Xray v26.7.11 / v26.7.28 使用）只有 `if peerPub == nil`，MLKEM768 是可选项 —— 所以这是 v26.9.9 引入的行为变化，v26.7.x 的节点从没暴露过这个问题。
+
+即 **ClientHello 中没有 X25519MLKEM768 就被直接丢弃**，随后静默回落到 `dest`。客户端只看到 `REALITY authentication failed`，服务端只留一行 `REALITY: processed invalid connection ...: authentication failed`。E2E 两个方向都验过：带开关 → 通（6d）；不带 → 必失败（6e）。
+
+**改动**：`ClashMeta.php` 两处 `reality-opts` 各补一个键（本仓库 `panel-patch/0001-reality-schema-and-transport-guard.patch` 已包含）：
+
+```php
+'reality-opts' => [
+    'public-key' => data_get($protocol_settings, 'reality_settings.public_key'),
+    'short-id'    => data_get($protocol_settings, 'reality_settings.short_id'),
+    'support-x25519mlkem768' => true,   // 新增
+];
+```
+
+**风险**：无。老版本 mihomo 不认识该键会被忽略（structure 解码不开 ErrorUnused），维持老行为；新版本则从"必失败"变成"能连上"。`vless://` URI 侧也有对应参数 `support-x25519mlkem768=1`（mihomo `common/convert/v.go:51`），但 `General.php` 的 URI 会被 v2rayN / sing-box 等多种客户端消费，加未知参数收益不确定，暂不改，仅文档说明。
+
+**怎么验证**：订阅拉下来 `grep support-x25519mlkem768`；或跑 `scripts/e2e/linux-e2e.sh` 的 6d / 6e。
+
 
 ## P1-1 VLESS encryption 从"单字段"升级为"设置对象"
 
@@ -80,10 +111,11 @@
 
 | 项 | 影响 | 成本 | 顺序 |
 |---|---|---|---|
-| P0-1 停发 h2 | 决定节点能否升到 v26.x 后正常起 | 小（2 文件 + 迁移映射） | 1 |
-| P0-2 REALITY 字段补齐 | 解锁 mldsa65/xver/limitFallback | 中（表单+校验+渲染） | 2 |
+| P0-1 停发 h2 | 决定节点能否升到 v26.x 后正常起 | 小（2 文件 + 迁移映射） | 2 |
+| P0-2 REALITY 字段补齐 | 解锁 mldsa65/xver/limitFallback | 中（表单+校验+渲染） | 4 |
 | P0-3 minClientVer 开关 | 防止误下发打死 mihomo 全系 | 小 | 3 |
-| P1-1 encryption 对象化 | 解锁 VLESS 抗量子加密 | 中 | 4 |
-| P1-2 kernel_type | 免改代码换内核 | 小（迁移+1 字段） | 5 |
-| P1-3 contract_version | 面板/节点解耦升级 | 小 | 6 |
-| P2-1/2/3 | 运维可见性与安全 | 小 | 7 |
+| P0-4 下发 support-x25519mlkem768 | 不补则 mihomo 全系连不上 26.x REALITY | 极小（2 行 PHP） | 1 |
+| P1-1 encryption 对象化 | 解锁 VLESS 抗量子加密 | 中 | 5 |
+| P1-2 kernel_type | 免改代码换内核 | 小（迁移+1 字段） | 6 |
+| P1-3 contract_version | 面板/节点解耦升级 | 小 | 7 |
+| P2-1/2/3 | 运维可见性与安全 | 小 | 8 |

@@ -17,6 +17,7 @@
 #  10 WS 推送：sync.config / sync.users 到达节点（需 ext-pcntl）
 #  11 REALITY：面板 reality_settings（DB snake_case）→ 面板归一化 → 节点 → REALITY 客户端真实握手
 #  12 mihomo 回归：mihomo 作为客户端过 REALITY（FlClash / Clash Verge Rev / Nikki 同一内核）
+#  13 反向对照：不带 support-x25519mlkem768 的 mihomo 必须认证失败（证明这是客户端侧必需项）
 set -uo pipefail
 
 E2E=${E2E:-/opt/xboard-e2e}
@@ -408,6 +409,7 @@ proxies:
     reality-opts:
       public-key: $RPUB
       short-id: "0123abcd"
+      support-x25519mlkem768: true
     client-fingerprint: chrome
 rules:
   - MATCH,e2e-reality
@@ -422,6 +424,8 @@ YAML
       ok "6d mihomo $MIHOMO_VER REALITY 握手成功并取到源站"
     else
       bad "6d mihomo REALITY 不通：${mgot:-<empty>}"
+      grep -q "X25519MLKEM768 for TLS. communication: false" "$E2E/logs/mihomo.log" 2>/dev/null \
+        && echo "  提示：mihomo 未发送 X25519MLKEM768 密钥共享，Xray 26.x REALITY 会直接丢弃该 ClientHello（认证失败）" || true
       echo "  --- mihomo -v ---"; "$E2E/bin/mihomo" -v 2>&1 | head -3
       echo "  --- mihomo.yaml ---"; sed -n '1,40p' "$E2E/node/mihomo.yaml"
       echo "  --- mihomo.log (tail 40) ---"; tail -40 "$E2E/logs/mihomo.log" || true
@@ -437,6 +441,35 @@ YAML
     bad "6d mihomo 下载失败（见 mihomo-dl.log）"
   fi
 fi
+
+say "6e. 反向对照：不开启 support-x25519mlkem768 时必须认证失败（这就是 mihomo 默认连不上 Xray 26.x REALITY 的原因）"
+MLPORT=$((PORT_SOCKS+7))
+mkdir -p "$E2E/node/legacy"
+cp "$E2E/node/mihomo.yaml" "$E2E/node/legacy/mihomo.yaml"
+python3 - "$E2E/node/legacy/mihomo.yaml" "$MLPORT" <<'PY'
+import io, sys
+p, port = sys.argv[1], sys.argv[2]
+d = io.open(p, encoding="utf-8").read()
+d = d.replace("support-x25519mlkem768: true", "")
+lines = d.split("\n")
+for i, line in enumerate(lines):
+    if line.startswith("mixed-port:"):
+        lines[i] = "mixed-port: " + port
+io.open(p, "w", encoding="utf-8").write("\n".join(lines))
+PY
+nohup "$E2E/bin/mihomo" -d "$E2E/node/legacy" -f "$E2E/node/legacy/mihomo.yaml" >"$E2E/logs/mihomo-legacy.log" 2>&1 &
+for i in $(seq 1 30); do ss -lntp 2>/dev/null | grep -q ":$MLPORT " && break; sleep 0.5; done
+lgot=$(curl -sS --max-time 20 --socks5-hostname 127.0.0.1:$MLPORT "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+if echo "$lgot" | grep -q hello-e2e; then
+  bad "6e 未开启 MLKEM 竟然也通了——mihomo 默认值已变，请复核面板补丁里的 support-x25519mlkem768"
+else
+  if grep -q "REALITY authentication failed" "$E2E/logs/mihomo-legacy.log"; then
+    ok "6e 反向对照成立：不带 support-x25519mlkem768 时 REALITY 认证失败（节点侧日志同时出现 processed invalid connection）"
+  else
+    bad "6e 反向对照未复现认证失败：$(tail -3 "$E2E/logs/mihomo-legacy.log" | tr '\n' ' ')"
+  fi
+fi
+pkill -f "mihomo -d $E2E/node/legacy" 2>/dev/null || true
 
 say "7. 契约快照（供人工核对）"
 (cd "$E2E/panel" && php -r '

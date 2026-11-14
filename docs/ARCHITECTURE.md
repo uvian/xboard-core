@@ -119,6 +119,21 @@ router 层的规则是内核自己执行的第一跳判定，与协议、与面�
 **不做的事**：不把它做成"精确的在线用户数"。UDP/UoT 会复用链路，语义是"当前托管的链路数"，
 这一点在 `SECURITY.md` §6 里写明了。
 
+### ADR-10 REALITY 的客户端兼容由面板下发，不由节点放宽
+
+**背景**：Xray v26.9.9 起（`xtls/reality@20260908` 的 `tls.go:233-235`）REALITY 服务端要求 ClientHello 携带 X25519MLKEM768 密钥共享；v26.7.x 用的 `reality@20260322` 只要求经典 X25519，所以这个坑是随内核升级出现的，而 mihomo 默认把 MLKEM768 摘掉（`component/tls/reality.go:58`）。结果是所有 mihomo 系客户端（FlClash / Clash Verge Rev / Nikki）对着 26.x REALITY 节点一律认证失败，且两端日志都只有"认证失败"这种无信息量的结论。
+
+**决策**：节点侧**不**为兼容而关 REALITY、也不降 TLS 版本、也不加"兼容模式"开关；改为在面板生成的订阅里显式写 `reality-opts.support-x25519mlkem768: true`（见 `docs/PANEL-IMPROVEMENTS.md` P0-4）。E2E 用 6d（必须通）/ 6e（去掉开关必须失败）双向钉住。
+
+**为什么不是节点侧**：
+
+- 节点侧能做的只有"换传输/关 REALITY"，那是把安全能力砍掉去迁就一个客户端默认值；
+- REALITY 的认证前提是密钥共享本身，服务端没有"接受无 MLKEM 的 ClientHello"的合法路径（代码里是硬 break，不是可配置项）；
+- 面板下发只是往 YAML 里加一个键，可回滚、零迁移、对老客户端无副作用。
+
+**代价**：老版本 mihomo（不认识该键）仍然连不上 26.x REALITY —— 这是客户端版本问题，在 `SECURITY.md` §3.1 与 README 的"客户端要求"里写明。
+
+
 ## 3. 代码地图
 
 ```
