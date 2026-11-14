@@ -48,11 +48,12 @@ func run() error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level(cfg.Log.Level)})))
 	xray.SetLogLevel(cfg.Log.Level)
 	xray.SetAllowPrivateTargets(cfg.Kernel.AllowPrivateTargets)
+	xray.SetStrictClientVer(cfg.Kernel.StrictClientVer)
 
-	// 纵深防御：MPTCP 是 CVE-2026-98432 的触发面。vendored 的 v26.10.31 在
+	// 纵深防御：MPTCP 是 CVE-2026-98432 的触发面。vendored 的 v26.11.9 在
 	// DefaultListener 里已经 SetMultipathTCP(false)，这里再确保运行时层也被兜住。
 	if v, ok := os.LookupEnv("GODEBUG"); !ok || !strings.Contains(v, "multipathtcp=0") {
-		// v26.10.31 的 DefaultListener 已经 SetMultipathTCP(false)，这一层只是纵深防御，
+		// v26.11.9 的 DefaultListener 已经 SetMultipathTCP(false)，这一层只是纵深防御，
 		// 所以用 Info：默认出现 WARN 会让人以为配置错了（见 docs/STATUS.md §5）。
 		slog.Info("GODEBUG lacks multipathtcp=0; socket-level SetMultipathTCP(false) still applies", "GODEBUG", v)
 	}

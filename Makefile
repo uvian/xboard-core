@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-XRAY_VERSION ?= v26.10.31
+XRAY_VERSION ?= v26.11.9
 XRAY_DIR := third_party/xray
 XRAY_REPO ?= https://github.com/XTLS/Xray-core
 EXE := $(if $(filter Windows_NT,$(OS)),.exe,)

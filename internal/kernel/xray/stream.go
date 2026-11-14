@@ -3,6 +3,7 @@ package xray
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -10,7 +11,7 @@ import (
 	"github.com/xtls/xray-core/infra/conf"
 )
 
-// 传输层白名单：只放行 v26.10.31 仍在、且我们真的会用的四种 + tcp。
+// 传输层白名单：只放行 v26.11.9 仍在、且我们真的会用的四种 + tcp。
 // h2/http/h3/quic 在上游已被移除，这里报硬错而不是静默降级——
 // 静默降级会把"面板还在发 h2、节点以为跑在 h2"变成线上连接被拒且无人知情。
 var removedNetworks = map[string]string{
@@ -164,8 +165,10 @@ func buildTLS(node *panel.NodeConfig) (*conf.TLSConfig, error) {
 // 与其让面板里出现"能连但一直断"的节点，不如启动时就报清楚。
 //
 // minClientVer 是这里最要紧的一条：mihomo 系客户端（FlClash / Clash Verge Rev / Nikki）
-// 在 ClientHello 里自报 1.8.2，服务端一旦下发 >= 26.x 的门禁，它们会被**静默**打回 dest。
-// 所以这里默认不下发；面板显式要求 >= 26.x 时直接报错，让人回面板改，而不是线上悄悄全灭。
+// 在 ClientHello 里自报 1.8.2，服务端一旦下发 >= 26.x 的门禁，它们会被**静默**打回 dest
+// （REALITY 不接管连接，直接 io.Copy 到 dest，服务端一行错误都没有）。
+// 所以这里默认不下发；面板显式下发越界值时默认只告警，避免把一个正当的防降级旋钮变成不可用，
+// 打开 kernel.strict_client_ver 则变成硬失败。
 func buildReality(node *panel.NodeConfig) (*conf.REALITYConfig, error) {
 	rs, err := node.Reality()
 	if err != nil {
@@ -184,8 +187,14 @@ func buildReality(node *panel.NodeConfig) (*conf.REALITYConfig, error) {
 	}
 	if v := rs.MinClientVer; v != "" {
 		if atLeast(v, 1, 8, 2) > 0 {
-			return nil, fmt.Errorf("xray: minClientVer=%s 会拒绝所有 mihomo 系客户端（它们自报 1.8.2），"+
-				"请在面板里清空或设为 1.0.0", v)
+			msg := fmt.Sprintf("REALITY minClientVer=%s 高于 mihomo 系客户端自报的 1.8.2："+
+				"FlClash / Clash Verge Rev / Nikki 会被静默打回 dest（表现为连上就断，服务端无错误日志）", v)
+			if strictClientVer {
+				return nil, fmt.Errorf("xray: %s；已开启 kernel.strict_client_ver，"+
+					"请在面板里清空或设为 1.0.0", msg)
+			}
+			slog.Warn("xray: "+msg+"；如非本意，请在面板里清空 minClientVer 或设为 1.0.0",
+				"node", node.Tag, "minClientVer", v)
 		}
 	}
 	if seed := rs.Mldsa65Seed; seed != "" && seed == rs.PrivateKey {

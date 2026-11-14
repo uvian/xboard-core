@@ -53,7 +53,7 @@ if command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq php-cli php-sqlite3 php-mbstring php-xml php-curl php-zip \
-      php-redis php-bcmath unzip curl sqlite3 redis-server git ca-certificates >/dev/null     || die "apt 安装失败（pcntl 已内建在 php-cli，不是独立包）"
+      php-redis php-bcmath php-intl unzip curl sqlite3 redis-server git ca-certificates >/dev/null     || die "apt 安装失败（pcntl 已内建在 php-cli，不是独立包）"
   systemctl enable --now redis-server >/dev/null 2>&1 || (redis-server --daemonize yes && sleep 1)
 fi
 for c in php composer git curl sqlite3; do command -v "$c" >/dev/null || die "缺 $c"; done
@@ -209,7 +209,7 @@ grep -aiE "dialing|accepted" "$E2E/logs/socksonly.log" | tail -3
 
 say "5c. 对照：完全未打补丁的上游二进制（连代码都是纯净的）"
 if [ ! -x "$E2E/bin/xray-pristine" ]; then
-  git clone -q --depth 1 -b v26.10.31 https://github.com/XTLS/Xray-core "$E2E/xray-pristine" >>"$E2E/logs/pristine-clone.log" 2>&1
+  git clone -q --depth 1 -b v26.11.9 https://github.com/XTLS/Xray-core "$E2E/xray-pristine" >>"$E2E/logs/pristine-clone.log" 2>&1
   ( cd "$E2E/xray-pristine" && timeout 600 go build -o "$E2E/bin/xray-pristine" ./main ) >>"$E2E/logs/pristine-build.log" 2>&1
 fi
 PSRV=$((PORT_NODE+3)); PCLI=$((PORT_SOCKS+4))
@@ -281,6 +281,97 @@ elif grep -q "blocked target" "$E2E/logs/stock.log"; then
   ok "6b 纯净 v26 服务端同样拦截私网目标（证明放行必须显式打开）"
 else
   bad "6b 纯净 Xray 失败原因不是私网拦截，需另查"
+fi
+
+say "6c. REALITY 节点：面板 reality_settings → 第二节点 → REALITY 客户端"
+# 这一段验证的是「面板真实下发的 reality_settings 能被节点消费、并把 REALITY 数据面跑通」。
+# 面板补丁把 DB 里的 snake_case（short_id / mldsa65_seed / xver）归一成 camelCase 再发给节点，
+# 所以夹具只写 DB 形状，走一遍补丁的归一化路径 —— 这正是最容易写错的地方。
+KEYOUT=$("$XRAY" x25519 2>/dev/null || true)
+RPRIV=$(printf '%s\n' "$KEYOUT" | sed -n 's/^PrivateKey:[[:space:]]*//p' | head -1)
+RPUB=$(printf '%s\n' "$KEYOUT" | sed -n 's/^Password (PublicKey):[[:space:]]*//p' | head -1)
+# dest 必须是公网 TLS1.3 站点：REALITY 服务端会用 SNI 去取它的真证书（带校验，自签不行）。
+RDEST=""
+for cand in www.microsoft.com www.apple.com www.cloudflare.com swdist.apple.com; do
+  if timeout 6 bash -c "</dev/tcp/$cand/443" 2>/dev/null; then RDEST=$cand; break; fi
+done
+if [ -z "$RPRIV" ] || [ -z "$RPUB" ]; then
+  bad "6c x25519 密钥生成失败：${KEYOUT:-<empty>}"
+elif [ -z "$RDEST" ]; then
+  printf '  \033[33mSKIP\033[0m 6c 没有任何可用的 REALITY dest（runner 出网被限），跳过\n'
+else
+  ok "6c 密钥与 dest 就绪（dest=$RDEST）"
+  cat > "$E2E/panel/e2e_seed_reality.php" <<PHP
+<?php
+require __DIR__.'/vendor/autoload.php';
+\$app = require __DIR__.'/bootstrap/app.php';
+\$app->make(Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+\$s = App\Models\Server::firstOrNew(['id' => 2]);
+// DB 形状：reality_settings 里是面板 snake_case 字段，补丁的 realityConfig() 负责归一化。
+\$s->fill(['type' => 'vless', 'name' => 'e2e-vless-reality', 'group_ids' => [1], 'host' => '127.0.0.1',
+          'port' => $((PORT_NODE+1)), 'server_port' => $((PORT_NODE+1)), 'show' => 1, 'enabled' => 1, 'rate' => 1,
+          'protocol_settings' => ['tls' => 2, 'network' => 'tcp', 'flow' => null,
+            'encryption' => ['enabled' => false, 'decryption' => null],
+            'reality_settings' => ['server_name' => '$RDEST', 'dest' => '$RDEST:443',
+              'server_port' => 443, 'private_key' => '$RPRIV', 'public_key' => '$RPUB',
+              'short_id' => '0123abcd', 'short_ids' => ['0123abcd'], 'xver' => 0]]])->save();
+echo "seeded reality server=".\$s->id.PHP_EOL;
+PHP
+  php "$E2E/panel/e2e_seed_reality.php" >"$E2E/logs/seed-reality.log" 2>&1 && ok "6c 夹具：REALITY 节点入库" || bad "6c REALITY 夹具失败"
+
+  # 面板 API 必须吐出归一化后的 camelCase 字段，节点才认。
+  rcfg=$(curl -sS --max-time 10 "http://127.0.0.1:$PORT_PANEL/api/v2/server/config?token=$TOKEN&node_id=2" 2>/dev/null || true)
+  if echo "$rcfg" | grep -q '"mldsa65Seed"' && echo "$rcfg" | grep -q '"xver"'; then
+    ok "6c 面板 API 归一化 reality_settings（mldsa65Seed/xver 就位）"
+  else
+    bad "6c 面板 API 没有归一化 REALITY 字段：$(echo "$rcfg" | head -c 200)"
+  fi
+
+  cat > "$E2E/node/config2.yaml" <<YAML
+log: {level: debug}
+node:
+  api_host: http://127.0.0.1:$PORT_PANEL
+  node_id: 2
+  api_key: $TOKEN
+  timeout: 15
+  retry: 3
+  pull_every: 30
+api: {listen: 127.0.0.1:8092, metrics: false}
+kernel: {xray: true, singbox: false, allow_private_targets: true}
+YAML
+  ( cd "$E2E/node" && nohup "$E2E/bin/xboard-core" -config config2.yaml >"$E2E/logs/node2.log" 2>&1 & )
+  for i in $(seq 1 40); do grep -q 'kernel started' "$E2E/logs/node2.log" && break; sleep 0.5; done
+  if grep -q 'kernel started' "$E2E/logs/node2.log"; then
+    ok "6c REALITY 内核启动（面板下发的 reality_settings 被接受）"
+  else
+    bad "6c REALITY 内核没起来（见 node2.log）"; tail -20 "$E2E/logs/node2.log"
+  fi
+  ss -lntp 2>/dev/null | grep -q ":$((PORT_NODE+1)) " && ok "6c 监听 $((PORT_NODE+1))" || bad "6c 未监听 REALITY 端口"
+  if grep -qiE 'minClientVer=.*(会|高于)' "$E2E/logs/node2.log"; then
+    bad "6c 误报了 minClientVer 告警（面板默认下发 null 不应触发）"
+  else
+    ok "6c minClientVer 默认不下发（mihomo 系客户端不会被门禁打回）"
+  fi
+
+  RCLI=$((PORT_SOCKS+5))
+  cat > "$E2E/node/client-reality.json" <<JSON
+{"log":{"loglevel":"debug"},
+ "inbounds":[{"tag":"s","listen":"127.0.0.1","port":$RCLI,"protocol":"socks","settings":{"udp":false}}],
+ "outbounds":[{"tag":"p","protocol":"vless",
+   "settings":{"vnext":[{"address":"127.0.0.1","port":$((PORT_NODE+1)),"users":[{"id":"$UUID","encryption":"none"}]}]},
+   "streamSettings":{"network":"tcp","security":"reality",
+     "realitySettings":{"serverName":"$RDEST","fingerprint":"chrome","publicKey":"$RPUB",
+       "shortId":"0123abcd","spiderX":"/"}}}]}
+JSON
+  nohup "$XRAY" run -c "$E2E/node/client-reality.json" >"$E2E/logs/client-reality.log" 2>&1 &
+  sleep 3
+  rgot=$(curl -sS --max-time 20 --socks5 127.0.0.1:$RCLI "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+  if echo "$rgot" | grep -q hello-e2e; then
+    ok "6c REALITY 数据面通（真实 REALITY 握手 + 转发）"
+  else
+    bad "6c REALITY 数据面不通：${rgot:-<empty>}"
+    grep -aiE "REALITY|rejected|failed|error" "$E2E/logs/node2.log" | tail -5
+  fi
 fi
 
 say "7. 契约快照（供人工核对）"

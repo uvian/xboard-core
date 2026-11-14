@@ -67,3 +67,12 @@ var allowPrivateTargets bool
 
 // SetAllowPrivateTargets 由配置决定是否放行私网目标。
 func SetAllowPrivateTargets(v bool) { allowPrivateTargets = v }
+
+// strictClientVer 打开后，面板下发会打掉 mihomo 系客户端的 minClientVer 时直接拒绝启动。
+// 默认关闭（只告警）：minClientVer 本身是 REALITY 的防降级旋钮，属于运维的正当选择；
+// 但服务端对不满足门禁的连接是**静默**回落 dest 的，没有日志、没有错误，只有用户报「连不上」，
+// 所以这道闸门在默认配置下必须喊出来。想把误配变成硬失败，就把它打开。
+var strictClientVer bool
+
+// SetStrictClientVer 由配置决定 minClientVer 越界时是报错还是告警。
+func SetStrictClientVer(v bool) { strictClientVer = v }

@@ -1,7 +1,7 @@
 # xboard-core
 
 面向 [cedar2025/Xboard](https://github.com/cedar2025/Xboard) 面板的下一代节点后端。
-取 `wyx2685/v2node` 的**现代协议覆盖 + 内核集成方式**，取 `cedar2025/Xboard-Node` 的**运维层（推送/机器模式/证书/双内核）**，内核基线锁 **Xray-core v26.10.31**。
+取 `wyx2685/v2node` 的**现代协议覆盖 + 内核集成方式**，取 `cedar2025/Xboard-Node` 的**运维层（推送/机器模式/证书/双内核）**，内核基线锁 **Xray-core v26.11.9**。
 
 > 文档：
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)（架构与决策记录）·
@@ -14,7 +14,7 @@
 
 | 维度 | Xboard-Node（dev 2026-04） | v2node（2026-10） | 本项目 |
 |---|---|---|---|
-| 内核版本 | fork 冻结在 v26.3.27 | v26.9.30 | **v26.10.31**（含 MPTCP 默认关闭） |
+| 内核版本 | fork 冻结在 v26.3.27 | v26.9.30 | **v26.11.9**（含 MPTCP 默认关闭） |
 | 设备数/限速 | `//go:linkname` 劫持未导出注册表 | 复制整个 dispatcher 包到自身模块 | **单补丁 `app/usergate`（3 处 hunk）** |
 | 协议面 | vless/vmess/trojan/ss/hysteria2/tuic/anytls（xray+sing-box） | vless/vmess/trojan/ss/hysteria2/tuic/**anytls**，含 **VLESS encryption / mldsa65Seed / xver** | xray 侧 vless/vmess/trojan/ss2022 + **完整 REALITY 硬化**；anytls/tuic/hysteria2 交 sing-box（**零协议补丁**） |
 | 传输 | ws/grpc/httpupgrade/**h2(已删)**/xhttp | tcp/ws/grpc/httpupgrade/xhttp | **xhttp 优先，h2/quic 编译期拒绝** |
@@ -50,7 +50,7 @@ docs/                     # 架构决策记录、面板改造清单
 依赖：Go 1.27+（`go.mod` 要求），git、GNU patch。
 
 ```bash
-make vendor          # clone Xray-core v26.10.31 到 third_party/xray
+make vendor          # clone Xray-core v26.11.9 到 third_party/xray
 make patches         # 打 patches/*.patch（幂等）
 make build           # -> bin/xboard-core
 bash scripts/verify.sh   # gofmt + vet + test + build + smoke + vendored 单测 + 补丁幂等

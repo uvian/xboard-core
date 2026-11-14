@@ -20,11 +20,17 @@
 
 ## 2. 决策记录
 
-### ADR-1 内核基线 = Xray-core v26.10.31
+### ADR-1 内核基线 = Xray-core v26.11.9
 
 理由：v26.10.31 是首个默认 `lc.SetMultipathTCP(false)` 的版本（`transport/internet/system_listener.go:92-94`），对应 CVE-2026-98432（Linux IPv4 MPTCP 监听 socket UAF，CVSS 9.8，被动路径即可触发）。继续留在 v26.3.27（Xboard-Node 现状）等于把每个节点暴露在该漏洞下。
 
 顺带拿到的：印度 CCA 三张根证书移除（v26.10.21）、`allowInsecure` 的真正替代（`pinnedPeerCertSha256`/`verifyPeerCertByName`）、REALITY 的 `mldsa65Seed`/`xver`/`limitFallback*`。
+
+**v26.10.31 → v26.11.9（2026-11-09）**：`app/dispatcher` 一行未动（补丁上下文零冲突），`infra/conf/xray.go`、`transport_security.go`、`policy.go`、`proxy/*` 均未变。与本项目相关的三处：
+
+1. `infra/conf/log.go` 的 JSON tag `loglevel` → `logLevel`（我们直接构造 `conf.LogConfig` 结构体，不受影响；但运维手写 JSON 配置时旧键会被忽略，见 §5）；
+2. `proxy/freedom` 的 `finalRules` 新增 `logLevel`、`blockDelay` 更名 `delay`（旧的 `blockDelay` 仍接受并打弃用告警）；**`action != block` 的规则带 `delay`/`logLevel` 会直接报错** —— 我们的 allow 规则只写 `action/network/ip`，安全；
+3. 新增 **XDRIVE 传输**（`transport/internet/xdrive`，`xdriveSettings`，可作入站），面板目前不下发，我们的传输白名单会明确报错而不是静默降级。
 
 ### ADR-2 零协议补丁：xray 只跑 vless/vmess/trojan/ss2022
 

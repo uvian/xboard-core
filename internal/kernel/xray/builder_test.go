@@ -92,7 +92,29 @@ func TestBuildRejectsRealityWithoutShortIDs(t *testing.T) {
 }
 
 // 显式设置 minClientVer >= 26 会把 mihomo 系客户端（自报 1.8.2）全部打回 dest。
-func TestBuildRejectsModernMinClientVer(t *testing.T) {
+//
+// 默认策略是「照下发 + 告警」：门禁本身是 REALITY 的防降级旋钮，属于运维的正当选择，
+// 我们不能因为担心误配就把这个安全能力关掉（详见 config.go 的 strictClientVer 注释）。
+func TestBuildHonorsModernMinClientVer(t *testing.T) {
+	n := realityNode(t)
+	b, _ := json.Marshal(map[string]any{
+		"private_key":  testPrivKey,
+		"server_names": []string{"example.com"},
+		"short_ids":    []string{"0123abcd"},
+		"dest":         "example.com:443",
+		"minClientVer": "26.3.27",
+	})
+	n.TLSSettings = b
+	if _, err := Build(n, users()); err != nil {
+		t.Fatalf("默认策略应照下发（只告警），得到 %v", err)
+	}
+}
+
+// 打开 kernel.strict_client_ver 后，同一个配置必须变成硬失败，且错误要能被人看懂。
+func TestBuildRejectsMinClientVerInStrictMode(t *testing.T) {
+	SetStrictClientVer(true)
+	t.Cleanup(func() { SetStrictClientVer(false) })
+
 	n := realityNode(t)
 	b, _ := json.Marshal(map[string]any{
 		"private_key":  testPrivKey,
@@ -103,8 +125,13 @@ func TestBuildRejectsModernMinClientVer(t *testing.T) {
 	})
 	n.TLSSettings = b
 	_, err := Build(n, users())
-	if err == nil || !strings.Contains(err.Error(), "minClientVer") {
-		t.Fatalf("want minClientVer error, got %v", err)
+	if err == nil {
+		t.Fatal("strict_client_ver 打开后应当报错")
+	}
+	for _, want := range []string{"minClientVer", "1.8.2", "strict_client_ver"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误信息缺少 %q：%v", want, err)
+		}
 	}
 }
 
@@ -125,7 +152,11 @@ func TestBuildAcceptsLegacyMinClientVer(t *testing.T) {
 }
 
 // "1.26.10" 逐段比较大于 (1,8,2)，只看主版本会把它当 1.x 放行 → 所有 mihomo 客户端被打回 dest。
-func TestBuildRejectsSneakyMinClientVer(t *testing.T) {
+// 逐段比较必须在这种"看起来是 1.x"的值上也成立（strict 模式下才看得见差别，所以这里开 strict）。
+func TestBuildRejectsSneakyMinClientVerInStrictMode(t *testing.T) {
+	SetStrictClientVer(true)
+	t.Cleanup(func() { SetStrictClientVer(false) })
+
 	for _, v := range []string{"1.26.10", "2.0.0", "26.3.27"} {
 		n := realityNode(t)
 		b, _ := json.Marshal(map[string]any{

@@ -73,7 +73,7 @@ bash scripts/verify.sh                           # 以上全套 + 补丁幂等�
 ```bash
 # 0) 只看契约，不需要环境：docs/CONTRACT.md §9 的四条 curl
 # 1) 从零构建
-make vendor          # 拉 Xray-core v26.10.31 到 third_party/xray（Windows 无 make 见 README）
+make vendor          # 拉 Xray-core v26.11.9 到 third_party/xray（Windows 无 make 见 README）
 make patches         # GNU patch 幂等应用 0001-usergate.patch
 bash scripts/verify.sh   # 等价 make verify
 # 2) 有 PHP 时

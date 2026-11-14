@@ -1,5 +1,5 @@
 diff --git a/app/dispatcher/default.go b/app/dispatcher/default.go
-index cae9735..7b426c0 100644
+index cae97351..7b426c01 100644
 --- a/app/dispatcher/default.go
 +++ b/app/dispatcher/default.go
 @@ -6,6 +6,7 @@ import (
@@ -39,7 +39,7 @@ index cae9735..7b426c0 100644
  		d.routedDispatch(ctx, outbound, destination)
 diff --git a/app/usergate/usergate.go b/app/usergate/usergate.go
 new file mode 100644
-index 0000000..c405544
+index 00000000..c405544f
 --- /dev/null
 +++ b/app/usergate/usergate.go
 @@ -0,0 +1,312 @@
@@ -357,7 +357,7 @@ index 0000000..c405544
 +}
 diff --git a/app/usergate/usergate_test.go b/app/usergate/usergate_test.go
 new file mode 100644
-index 0000000..8c1b810
+index 00000000..8c1b8101
 --- /dev/null
 +++ b/app/usergate/usergate_test.go
 @@ -0,0 +1,89 @@

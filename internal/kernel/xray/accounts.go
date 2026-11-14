@@ -20,7 +20,7 @@ func Email(u panel.UserInfo) string { return fmt.Sprintf("%d.%s", u.ID, u.UUID) 
 
 // buildUser 把面板用户翻译成 xray 的 protocol.User。
 //
-// v26.10.31 的账号类型都退回各自协议包内（proxy/vless/account 子包已不存在），
+// v26.11.9 的账号类型都退回各自协议包内（proxy/vless/account 子包已不存在），
 // 这里按协议挑对应的 proto Account；trojan / shadowsocks 的凭据就是密码本身。
 func buildUser(proto string, u panel.UserInfo) (*protocol.User, error) {
 	user := &protocol.User{Email: Email(u), Level: 0}

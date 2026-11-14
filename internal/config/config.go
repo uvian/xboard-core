@@ -62,6 +62,11 @@ type KernelConf struct {
 	// 默认 false：xray v26 的 freedom 出站对 vless/vmess/trojan/ss 入站内置了禁止私网目标的规则，
 	// 这也是防 SSRF 的最后一道闸；确实需要访问内网（自建监控、内网 API）再打开。
 	AllowPrivateTargets bool `mapstructure:"AllowPrivateTargets"`
+
+	// StrictClientVer 把「面板下发的 REALITY minClientVer 会打死 mihomo 系客户端」
+	// 从告警升级为启动失败。默认 false：门禁本身是正当的防降级手段，
+	// 不满足时服务端只是静默回落 dest，所以默认用一条 WARN 提醒，而不是禁止下发。
+	StrictClientVer bool `mapstructure:"StrictClientVer"`
 }
 
 func defaults() *Conf {
@@ -156,6 +161,7 @@ var aliases = map[string]string{
 	"kernel.singbox_binary":        "Kernel.SingboxBinary",
 	"kernel.singbox_dir":           "Kernel.SingboxDir",
 	"kernel.allow_private_targets": "Kernel.AllowPrivateTargets",
+	"kernel.strict_client_ver":     "Kernel.StrictClientVer",
 }
 
 func applyAliases(v *viper.Viper) {
