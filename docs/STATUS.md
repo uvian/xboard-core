@@ -449,6 +449,9 @@ xray 在日志里只打前半段）—— 服务端主动丢弃，不是我们�
 `PASS 6e 反向对照成立：去掉开关后 mihomo 报认证失败，节点侧 processed invalid connection +10`
 —— 这条现在两端都有证据。
 
+收尾时在最终 HEAD（`91c35c4`）上又跑了一遍：`e2e` run **43595346760**，同样 **PASS=26 FAIL=0 SKIP=0**；`ci` 在 `91c35c4` 上也 success，`scripts/verify.sh` 本地复跑 `== OK: 全部通过`（smoke `app=7 bytes=1284`）。
+面板 HEAD 在同一时间复查仍是 `d826a3b`（无新提交、无 tag/release），即本文档的兼容基线没有漂移。
+
 
 ### 9.9 仍未做（明确列着）
 
