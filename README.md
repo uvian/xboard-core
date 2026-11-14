@@ -74,3 +74,18 @@ vendored `app/usergate` 与 `app/dispatcher` 单测均已通过。
 4. `h2`/`http`/`h3`/`quic` 传输在构建层直接报错（上游已删除），不会静默降级成 tcp。
 5. REALITY：`shortIds` 非空校验、`dest` 必填、`maxTimeDiff` 缺省 90s、可选 `mldsa65Seed`/`xver`/`limitFallback*`。
 6. 不下发 `minClientVer`；若面板下发则记 WARN 并在 `/status` 暴露，避免 mihomo 系客户端被静默回落。
+
+## 客户端要求（REALITY 节点）
+
+Xray **v26.9.9** 起，REALITY 服务端只接受携带 **X25519MLKEM768** 密钥共享的 ClientHello
+（`xtls/reality` `tls.go:233-235` 硬 `break`），而 mihomo 默认把 MLKEM768 摘掉
+（`component/tls/reality.go:58`）。所以：
+
+- **mihomo 系客户端**（FlClash / Clash Verge Rev / Nikki）：订阅里必须带
+  `reality-opts.support-x25519mlkem768: true`。本项目 `panel-patch` 已让 Xboard 的
+  `ClashMeta.php` 下发该键，直接打补丁即可。客户端内核版本需支持该键（FlClash 内置 mihomo
+  提交 `024245dc`、2026-11-01 已支持；更老的内核会忽略该键，表现为仍然连不上）。
+- **xray 系客户端**：无影响，本来就发 MLKEM768。
+- 缺这个键时的现象：客户端 `REALITY authentication failed`，节点只留
+  `REALITY: processed invalid connection ...: authentication failed`，两边都没有更细的原因。
+
