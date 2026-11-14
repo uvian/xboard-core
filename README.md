@@ -83,9 +83,11 @@ Xray **v26.9.9** 起，REALITY 服务端只接受携带 **X25519MLKEM768** 密�
 
 - **mihomo 系客户端**（FlClash / Clash Verge Rev / Nikki）：订阅里必须带
   `reality-opts.support-x25519mlkem768: true`。本项目 `panel-patch` 已让 Xboard 的
-  `ClashMeta.php` 下发该键，直接打补丁即可。客户端内核版本需支持该键（FlClash 内置 mihomo
-  提交 `024245dc`、2026-11-01 已支持；更老的内核会忽略该键，表现为仍然连不上）。
+  `ClashMeta.php` 下发该键，直接打补丁即可。客户端内置的 mihomo 内核需支持该键：
+  **mihomo v1.19.34 实测可用**（E2E 6d/6e 双向断言：带键通、不带键必失败）；
+  更老的内核会忽略未知键，表现为仍然连不上。
 - **xray 系客户端**：无影响，本来就发 MLKEM768。
-- 缺这个键时的现象：客户端 `REALITY authentication failed`，节点只留
-  `REALITY: processed invalid connection ...: authentication failed`，两边都没有更细的原因。
+- 缺这个键时的现象：客户端 `REALITY authentication failed`，节点侧只留
+  `REALITY: processed invalid connection from <addr>: authentication failed or validation criteria not met`
+  （`tls.go:490` + `:484`），两边都没有更细的原因。
 

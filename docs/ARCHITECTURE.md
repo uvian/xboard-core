@@ -121,7 +121,7 @@ router 层的规则是内核自己执行的第一跳判定，与协议、与面�
 
 ### ADR-10 REALITY 的客户端兼容由面板下发，不由节点放宽
 
-**背景**：Xray v26.9.9 起（`xtls/reality@20260908` 的 `tls.go:233-235`）REALITY 服务端要求 ClientHello 携带 X25519MLKEM768 密钥共享；v26.7.x 用的 `reality@20260322` 只要求经典 X25519，所以这个坑是随内核升级出现的，而 mihomo 默认把 MLKEM768 摘掉（`component/tls/reality.go:58`）。结果是所有 mihomo 系客户端（FlClash / Clash Verge Rev / Nikki）对着 26.x REALITY 节点一律认证失败，且两端日志都只有"认证失败"这种无信息量的结论。
+**背景**：Xray v26.9.9 起（`xtls/reality@20260908` 的 `tls.go:233-235`）REALITY 服务端要求 ClientHello 携带 X25519MLKEM768 密钥共享；v26.7.x 用的 `reality@20260322` **两种都接受**（只带经典 X25519 也能进认证，`tls.go:216`；只带 MLKEM768 走 `tls.go:221-224` 的回退切片），所以这个坑是随内核升级出现的，而 mihomo 默认把 MLKEM768 摘掉（`component/tls/reality.go:58`）。结果是所有 mihomo 系客户端（FlClash / Clash Verge Rev / Nikki）对着 26.x REALITY 节点一律认证失败，且两端日志都只有"认证失败"这种无信息量的结论。
 
 **决策**：节点侧**不**为兼容而关 REALITY、也不降 TLS 版本、也不加"兼容模式"开关；改为在面板生成的订阅里显式写 `reality-opts.support-x25519mlkem768: true`（见 `docs/PANEL-IMPROVEMENTS.md` P0-4）。E2E 用 6d（必须通）/ 6e（去掉开关必须失败）双向钉住。
 

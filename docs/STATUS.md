@@ -359,10 +359,15 @@ gh workflow run e2e.yml --repo uvian/xboard-core
   → 用 PHP 夹具写入 `tls=2` 的节点（DB 里是 snake_case 的 `reality_settings`）
   → 断言面板 API 归一化出 `mldsa65Seed`/`xver` → 起第二个节点实例 → 断言内核启动、端口监听、
   没有 minClientVer 误告警 → 起 REALITY 客户端取回源站内容。
-- **6d mihomo 回归**：下载 `mihomo v1.19.34`，用 `reality-opts{public-key,short-id}` +
-  `client-fingerprint: chrome` 走同一 REALITY 节点。这条是回归闸门：mihomo 的 REALITY 客户端
-  在 `component/tls/reality.go:74-76` 写死自报版本 `1.8.2`，一旦上游（或我们的默认值）把
-  `minClientVer` 设成 ≥26.x，这条断言会立刻红。
+- **6d mihomo 回归**：下载 `mihomo v1.19.34`，用 `reality-opts{public-key, short-id, support-x25519mlkem768: true}`
+  （该键的来由见 9.7）+ `client-fingerprint: chrome` 走同一 REALITY 节点。这条是回归闸门：
+  mihomo 的 REALITY 客户端在 `component/tls/reality.go:74-76` 写死自报版本 `1.8.2`，一旦上游
+  （或我们的默认值）把 `minClientVer` 设成 ≥26.x，这条断言会立刻红；同时它也在钉住
+  `support-x25519mlkem768` 这个必需项——**6e 与之成对**：
+- **6e 反向对照**：复制 6d 的配置、删掉 `support-x25519mlkem768` 后必须连不上，且
+  客户端日志出现 `REALITY authentication failed`、节点侧 `processed invalid connection` 计数必须增加。
+  6e 只在 6d 通过时才跑（否则报 SKIP），避免"用未证明的前提去证明结论"；
+  改完 yaml 还会回读校验键真的被删、端口真的换了，防止精确子串没命中时变成假对照。
 
 ### 9.5.1 本轮踩到的两个坑（写下来免得下次重踩）
 
@@ -397,7 +402,9 @@ PASS 10 补丁未新增/修改 database/migrations（升级不改 schema，proto
 ### 9.7 mihomo 系客户端连不上 REALITY：根因与处置（2026-11-14）
 
 E2E 6d 最初一直失败：`mihomo.log` 反复 `REALITY authentication failed`，同一时刻 xray 客户端用同一个节点成功。`node2.log` 对应的是
-`transport/internet/tcp: REALITY: processed invalid connection from ...: authentication failed` —— 服务端主动丢弃，不是我们的配置/闸门。
+`transport/internet/tcp: REALITY: processed invalid connection from ...`，紧接的失败原因串是
+`authentication failed or validation criteria not met`（`xtls/reality` `tls.go:490` 调用 `:484` 的文案，
+xray 在日志里只打前半段）—— 服务端主动丢弃，不是我们的配置/闸门。
 
 根因（逐行读 `xtls/reality@v0.0.0-20261108101329-4bb46b2afd8b/tls.go`）：
 

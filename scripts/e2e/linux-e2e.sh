@@ -34,10 +34,14 @@ TOKEN=${TOKEN:-e2e-token-abcdef123456}
 NODE_ID=1
 UUID=0f6b8b45-6a2f-4b4e-9a8f-1234567890ab
 
-PASS=0; FAIL=0
+PASS=0; FAIL=0; SKIP=0
 say()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 ok()   { PASS=$((PASS+1)); printf '  \033[32mPASS\033[0m %s\n' "$*"; }
 bad()  { FAIL=$((FAIL+1)); printf '  \033[31mFAIL\033[0m %s\n' "$*"; }
+# SKIP 单独计数：环境不具备（无 443 出网、无 pcntl）时不能冒充“通过”。
+# 默认 STRICT=1：跳过项也算失败，避免闸门静默退化成空跑（本机调试可 STRICT=0）。
+skip() { SKIP=$((SKIP+1)); printf '  \033[33mSKIP\033[0m %s\n' "$*"; }
+STRICT=${STRICT:-1}
 die()  { printf '\n\033[31m!! %s\033[0m\n' "$*"; dump; exit 1; }
 dump() {
   for f in "$E2E"/logs/*.log; do
@@ -49,6 +53,10 @@ dump() {
 
 [ "$(id -u)" = 0 ] || die "需要 root（安装 PHP 扩展、绑端口）"
 KEEP=0; [ "${1:-}" = "--keep" ] && KEEP=1
+# mihomo 是自启的后台进程，脚本异常退出时不清掉，下一轮会在同一端口上
+# 用上一轮作废的 public-key / short-id 继续服务 → 6d 假红。
+cleanup() { pkill -f "$E2E/bin/mihomo" 2>/dev/null || true; }
+trap cleanup EXIT
 if [ "$KEEP" = 0 ]; then rm -rf "$E2E"; fi
 mkdir -p "$E2E"/{logs,bin,node}
 
@@ -60,7 +68,7 @@ if command -v apt-get >/dev/null; then
       php-redis php-bcmath php-intl unzip curl sqlite3 redis-server git ca-certificates >/dev/null     || die "apt 安装失败（pcntl 已内建在 php-cli，不是独立包）"
   systemctl enable --now redis-server >/dev/null 2>&1 || (redis-server --daemonize yes && sleep 1)
 fi
-for c in php composer git curl sqlite3; do command -v "$c" >/dev/null || die "缺 $c"; done
+for c in php composer git curl sqlite3 python3; do command -v "$c" >/dev/null || die "缺 $c"; done
 php -m | grep -q pcntl && HAVE_PCNTL=1 || HAVE_PCNTL=0
 
 say "1. 面板：克隆 + 打补丁 + 依赖"
@@ -146,8 +154,7 @@ PHP
     bad "2.5 WS 未就绪：heartbeat=$hb handshake=$hs（见 ws.log）"
   fi
 else
-  printf '  [33mSKIP[0m 2.5 本机 PHP 无 pcntl，WS 服务起不来
-'
+  skip "2.5 本机 PHP 无 pcntl，WS 服务起不来"
 fi
 
 export GOFLAGS=-mod=mod   # 允许 go 自动补齐 go.sum（跨平台依赖）
@@ -302,7 +309,7 @@ done
 if [ -z "$RPRIV" ] || [ -z "$RPUB" ]; then
   bad "6c x25519 密钥生成失败：${KEYOUT:-<empty>}"
 elif [ -z "$RDEST" ]; then
-  printf '  \033[33mSKIP\033[0m 6c 没有任何可用的 REALITY dest（runner 出网被限），跳过\n'
+  skip "6c 没有任何可用的 REALITY dest（runner 出网被限），跳过"
 else
   ok "6c 密钥与 dest 就绪（dest=$RDEST）"
   cat > "$E2E/panel/e2e_seed_reality.php" <<PHP
@@ -382,8 +389,9 @@ say "6d. mihomo 客户端回归（FlClash / Clash Verge Rev / Nikki 用的是同
 # 为什么非测不可：mihomo 在 ClientHello 里自报 1.8.2，而我们所有 REALITY 相关判断
 # （minClientVer 守卫、mldsa65、xver）都以它为前提；用 xray 客户端测通不等于 mihomo 能连。
 MIHOMO_VER=${MIHOMO_VER:-v1.19.34}
+M6D=skip
 if [ -z "${RDEST:-}" ]; then
-  printf '  \033[33mSKIP\033[0m 6d 没有 REALITY dest，跳过 mihomo 回归\n'
+  skip "6d 没有 REALITY dest，跳过 mihomo 回归"
 else
   if [ ! -x "$E2E/bin/mihomo" ]; then
     curl -fsSL --retry 2 -o "$E2E/bin/mihomo.gz" \
@@ -415,6 +423,7 @@ proxies:
 rules:
   - MATCH,e2e-reality
 YAML
+    pkill -f "$E2E/bin/mihomo" 2>/dev/null || true; sleep 1
     nohup "$E2E/bin/mihomo" -d "$E2E/node" -f "$E2E/node/mihomo.yaml" >"$E2E/logs/mihomo.log" 2>&1 &
     for i in $(seq 1 30); do ss -lntp 2>/dev/null | grep -q ":$MPORT " && break; sleep 0.5; done
     if ! ss -lntp 2>/dev/null | grep -q ":$MPORT "; then
@@ -423,9 +432,11 @@ YAML
     mgot=$(curl -sS --max-time 25 --socks5-hostname 127.0.0.1:$MPORT "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
     if echo "$mgot" | grep -q hello-e2e; then
       ok "6d mihomo $MIHOMO_VER REALITY 握手成功并取到源站"
+      M6D=ok
     else
       bad "6d mihomo REALITY 不通：${mgot:-<empty>}"
-      grep -q "X25519MLKEM768 for TLS. communication: false" "$E2E/logs/mihomo.log" 2>/dev/null \
+      M6D=fail
+      grep -q "X25519MLKEM768 for TLS' communication: false" "$E2E/logs/mihomo.log" 2>/dev/null \
         && echo "  提示：mihomo 未发送 X25519MLKEM768 密钥共享，Xray 26.x REALITY 会直接丢弃该 ClientHello（认证失败）" || true
       echo "  --- mihomo -v ---"; "$E2E/bin/mihomo" -v 2>&1 | head -3
       echo "  --- mihomo.yaml ---"; sed -n '1,40p' "$E2E/node/mihomo.yaml"
@@ -440,15 +451,21 @@ YAML
     fi
   else
     bad "6d mihomo 下载失败（见 mihomo-dl.log）"
+    M6D=skip
   fi
 fi
 
 say "6e. 反向对照：不开启 support-x25519mlkem768 时必须认证失败（这就是 mihomo 默认连不上 Xray 26.x REALITY 的原因）"
-MLPORT=$((PORT_SOCKS+7))
-mkdir -p "$E2E/node/legacy"
-cp "$E2E/node/mihomo.yaml" "$E2E/node/legacy/mihomo.yaml"
-python3 - "$E2E/node/legacy/mihomo.yaml" "$MLPORT" <<'PY'
-import io, sys
+# 反向对照只有在正向对照确实成立时才有意义：6d 没过（或没跑），这条只能说"无法判定"，
+# 否则一次 public-key 写错、时钟偏移都会让它"看似成立"，等于用未证明的前提证明结论。
+if [ "${M6D:-skip}" != "ok" ]; then
+  skip "6e 6d 未通过（或跳过），反向对照无法判定"
+else
+  MLPORT=$((PORT_SOCKS+7))
+  mkdir -p "$E2E/node/legacy"
+  cp "$E2E/node/mihomo.yaml" "$E2E/node/legacy/mihomo.yaml"
+  python3 - "$E2E/node/legacy/mihomo.yaml" "$MLPORT" <<'PY'
+import io, os, sys
 p, port = sys.argv[1], sys.argv[2]
 d = io.open(p, encoding="utf-8").read()
 d = d.replace("support-x25519mlkem768: true", "")
@@ -456,21 +473,33 @@ lines = d.split("\n")
 for i, line in enumerate(lines):
     if line.startswith("mixed-port:"):
         lines[i] = "mixed-port: " + port
-io.open(p, "w", encoding="utf-8").write("\n".join(lines))
+tmp = p + ".tmp"
+io.open(tmp, "w", encoding="utf-8").write("\n".join(lines))
+os.replace(tmp, p)
 PY
-nohup "$E2E/bin/mihomo" -d "$E2E/node/legacy" -f "$E2E/node/legacy/mihomo.yaml" >"$E2E/logs/mihomo-legacy.log" 2>&1 &
-for i in $(seq 1 30); do ss -lntp 2>/dev/null | grep -q ":$MLPORT " && break; sleep 0.5; done
-lgot=$(curl -sS --max-time 20 --socks5-hostname 127.0.0.1:$MLPORT "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
-if echo "$lgot" | grep -q hello-e2e; then
-  bad "6e 未开启 MLKEM 竟然也通了——mihomo 默认值已变，请复核面板补丁里的 support-x25519mlkem768"
-else
-  if grep -q "REALITY authentication failed" "$E2E/logs/mihomo-legacy.log"; then
-    ok "6e 反向对照成立：不带 support-x25519mlkem768 时 REALITY 认证失败（节点侧日志同时出现 processed invalid connection）"
+  # 改配置本身要验，否则精确子串没命中时这一节会变成“带开关也能通过”的假对照。
+  if grep -q 'support-x25519mlkem768' "$E2E/node/legacy/mihomo.yaml"; then
+    bad "6e 没删掉 support-x25519mlkem768，本次对照无效"
+  elif ! grep -q "^mixed-port: $MLPORT$" "$E2E/node/legacy/mihomo.yaml"; then
+    bad "6e mixed-port 改写失败，第二个实例会抢 $MPORT"
   else
-    bad "6e 反向对照未复现认证失败：$(tail -3 "$E2E/logs/mihomo-legacy.log" | tr '\n' ' ')"
+    NFAIL0=$(grep -c "REALITY: processed invalid connection" "$E2E/logs/node2.log" 2>/dev/null || true)
+    pkill -f "$E2E/bin/mihomo" 2>/dev/null || true; sleep 1
+    nohup "$E2E/bin/mihomo" -d "$E2E/node/legacy" -f "$E2E/node/legacy/mihomo.yaml" >"$E2E/logs/mihomo-legacy.log" 2>&1 &
+    for i in $(seq 1 30); do ss -lntp 2>/dev/null | grep -q ":$MLPORT " && break; sleep 0.5; done
+    lgot=$(curl -sS --max-time 20 --socks5-hostname 127.0.0.1:$MLPORT "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+    NFAIL1=$(grep -c "REALITY: processed invalid connection" "$E2E/logs/node2.log" 2>/dev/null || true)
+    if echo "$lgot" | grep -q hello-e2e; then
+      bad "6e 未开启 MLKEM 竟然也通了——mihomo 默认值已变，请复核面板补丁里的 support-x25519mlkem768"
+    elif grep -q "REALITY authentication failed" "$E2E/logs/mihomo-legacy.log" \
+         && [ "${NFAIL1:-0}" -gt "${NFAIL0:-0}" ]; then
+      ok "6e 反向对照成立：去掉开关后 mihomo 报认证失败，节点侧 processed invalid connection +$((NFAIL1-NFAIL0))"
+    else
+      bad "6e 反向对照未复现：mihomo=$(grep -c 'REALITY authentication failed' "$E2E/logs/mihomo-legacy.log" 2>/dev/null || true) 节点新增=$((${NFAIL1:-0}-${NFAIL0:-0}))；$(tail -3 "$E2E/logs/mihomo-legacy.log" | tr '\n' ' ')"
+    fi
   fi
+  pkill -f "$E2E/bin/mihomo" 2>/dev/null || true
 fi
-pkill -f "mihomo -d $E2E/node/legacy" 2>/dev/null || true
 
 say "7. 契约快照（供人工核对）"
 (cd "$E2E/panel" && php -r '
@@ -501,8 +530,7 @@ if [ "$HAVE_PCNTL" = 1 ]; then
     bad "10 节点未收到 WS 事件（node.log 与 ws.log 见现场）"
   fi
 else
-  printf '  [33mSKIP[0m 10 本机 PHP 无 pcntl，WS 服务起不来
-'
+  skip "10 本机 PHP 无 pcntl，WS 服务起不来"
 fi
 
 if [ -n "$RPRIV" ] && [ -n "$RDEST" ]; then
@@ -548,11 +576,15 @@ PHP
     bad "10 补丁动了 database/migrations（$MIGN 个文件），升级路径不再纯净"
   fi
 else
-  printf '  \033[33mSKIP\033[0m 10 没有 REALITY 密钥/dest，跳过后向兼容检查\n'
+  skip "10 没有 REALITY 密钥/dest，跳过后向兼容检查"
 fi
 
 
 say "结果"
-printf '  PASS=%d FAIL=%d\n  E2E 目录：%s（日志在 %s/logs）\n' "$PASS" "$FAIL" "$E2E" "$E2E"
+printf '  PASS=%d FAIL=%d SKIP=%d\n  E2E 目录：%s（日志在 %s/logs）\n' "$PASS" "$FAIL" "$SKIP" "$E2E" "$E2E"
 [ "$FAIL" = 0 ] || { printf '\n\033[31m有失败项，现场如下\033[0m\n'; dump; exit 1; }
+if [ "$SKIP" != 0 ] && [ "$STRICT" = 1 ]; then
+  printf '\n\033[31mSTRICT=1 且有 %d 项被跳过：环境不满足时这些契约没有被验证\033[0m\n' "$SKIP"
+  dump; exit 1
+fi
 printf '\n\033[32m全部通过\033[0m\n'

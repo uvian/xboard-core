@@ -48,7 +48,7 @@
 
 ## P0-4 mihomo 系客户端的 REALITY 必须下发 `support-x25519mlkem768`
 
-**现状**：`app/Protocols/ClashMeta.php:438-441`（订阅 proxies 段）与 `:532-535`（另一协议分支）生成的 `reality-opts` 只有 `public-key` + `short-id`。而 mihomo（FlClash / Clash Verge Rev / Nikki 的内核）默认**不发送** X25519MLKEM768 密钥共享 —— `component/tls/reality.go:58` 的 `if !realityConfig.SupportX25519MLKEM768 { BuildRemovedX25519MLKEM768HandshakeState(uConn) }` 会把 MLKEM768 从 ClientHello 摘掉，代码注释写的是"为了兼容老的 reality 服务端"。
+**现状**：`app/Protocols/ClashMeta.php:438-441`（`buildVless()`，:404）与 `:532-535`（`buildTrojan()`，:513）生成的 `reality-opts` 只有 `public-key` + `short-id`。而 mihomo（FlClash / Clash Verge Rev / Nikki 的内核）默认**不发送** X25519MLKEM768 密钥共享 —— `component/tls/reality.go:58` 的 `if !realityConfig.SupportX25519MLKEM768 { BuildRemovedX25519MLKEM768HandshakeState(uConn) }` 会把 MLKEM768 从 ClientHello 摘掉，代码注释写的是"为了兼容老的 reality 服务端"。
 
 **为什么这会导致连不上**：Xray 侧 REALITY 服务端自 `xtls/reality@v0.0.0-20260908062103`（**Xray v26.9.9**）起，`tls.go:233-235`：
 
@@ -72,7 +72,7 @@ if peerPub2 == nil {
 ];
 ```
 
-**风险**：无。老版本 mihomo 不认识该键会被忽略（structure 解码不开 ErrorUnused），维持老行为；新版本则从"必失败"变成"能连上"。`vless://` URI 侧也有对应参数 `support-x25519mlkem768=1`（mihomo `common/convert/v.go:51`），但 `General.php` 的 URI 会被 v2rayN / sing-box 等多种客户端消费，加未知参数收益不确定，暂不改，仅文档说明。
+**风险**：极低。老版本 mihomo 不认识该键会被忽略（structure 解码不开 `ErrorUnused`），维持老行为；新版本则从"必失败"变成"能连上"。同一份补丁还把 `ServerService::realityConfig()` 从直通改成白名单投射（14 个键），未列入的键会被丢弃——节点侧本来也只读这些键，所以没有行为变化；但这条改动比 2 行 PHP 大，灰度时一并留意。`vless://` URI 侧也有对应参数 `support-x25519mlkem768=1`（mihomo `common/convert/v.go:51`），但 `General.php` 的 URI 会被 v2rayN / sing-box 等多种客户端消费，加未知参数收益不确定，暂不改，仅文档说明。
 
 **怎么验证**：订阅拉下来 `grep support-x25519mlkem768`；或跑 `scripts/e2e/linux-e2e.sh` 的 6d / 6e。
 
@@ -120,7 +120,7 @@ if peerPub2 == nil {
 | P0-1 停发 h2 | 决定节点能否升到 v26.x 后正常起 | 小（2 文件 + 迁移映射） | 2 |
 | P0-2 REALITY 字段补齐 | 解锁 mldsa65/xver/limitFallback | 中（表单+校验+渲染） | 4 |
 | P0-3 minClientVer 开关 | 防止误下发打死 mihomo 全系 | 小 | 3 |
-| P0-4 下发 support-x25519mlkem768 | 不补则 mihomo 全系连不上 26.x REALITY | 极小（2 行 PHP） | 1 |
+| P0-4 下发 support-x25519mlkem768 | 不补则 mihomo 全系连不上 26.x REALITY | 极小（2 行 PHP，随同补丁的 realityConfig 白名单） | 1 |
 | P1-1 encryption 对象化 | 解锁 VLESS 抗量子加密 | 中 | 5 |
 | P1-2 kernel_type | 免改代码换内核 | 小（迁移+1 字段） | 6 |
 | P1-3 contract_version | 面板/节点解耦升级 | 小 | 7 |

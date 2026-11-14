@@ -55,7 +55,7 @@
 **REALITY 的客户端前提**：Xray v26.9.9 起的 REALITY 服务端只接受带 X25519MLKEM768 密钥共享的 ClientHello
 （`xtls/reality` `tls.go:233-235` 是硬 `break`）。mihomo 默认把它摘掉，所以 FlClash / Clash Verge Rev / Nikki
 必须拿到带 `reality-opts.support-x25519mlkem768: true` 的订阅配置才能连上，否则表现为 `REALITY authentication failed`
-（节点侧日志 `REALITY: processed invalid connection ...: authentication failed`）。我们的面板补丁已在
+（节点侧日志 `REALITY: processed invalid connection from <addr>`，失败原因是 `authentication failed or validation criteria not met`，`xtls/reality` `tls.go:490` + `:484`）。我们的面板补丁已在
 `app/Protocols/ClashMeta.php` 两处 `reality-opts` 里下发该键（`docs/PANEL-IMPROVEMENTS.md` P0-4），E2E 6d/6e 双向验证。
 
 ### 3.2 数据面：设备数与限速
