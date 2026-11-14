@@ -33,7 +33,7 @@ func (r *Registry) Handler() http.Handler {
 			{"xboard_core_config_reloads_total", "Config reload attempts.", r.Reloads.Load()},
 			{"xboard_core_config_reload_errors_total", "Config reload failures.", r.ReloadErrors.Load()},
 			{"xboard_core_gate_rejects_total", "Connections rejected by device limit.", r.GateRejects.Load()},
-			{"xboard_core_active_conns", "Active connections.", r.ActiveConns.Load()},
+			{"xboard_core_active_conns", "Connections currently held by the xray usergate hook.", r.ActiveConns.Load()},
 			{"xboard_core_users", "Users loaded in kernel.", r.Users.Load()},
 			{"xboard_core_last_pull_ok_timestamp", "Last successful panel pull.", r.LastPullOK.Load()},
 			{"xboard_core_kernel_restarts_total", "Kernel instance restarts.", r.KernelRestarts.Load()},

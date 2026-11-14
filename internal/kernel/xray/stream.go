@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net"
 	"strconv"
 	"strings"
 
@@ -210,6 +211,9 @@ func buildReality(node *panel.NodeConfig) (*conf.REALITYConfig, error) {
 		}
 		dest = fmt.Sprintf("%s:%d", names[0], port)
 	}
+	if err := validateRealityDest(dest); err != nil {
+		return nil, err
+	}
 	destJSON, err := json.Marshal(dest)
 	if err != nil {
 		return nil, fmt.Errorf("xray: REALITY dest: %w", err)
@@ -273,4 +277,39 @@ func majorVersion(v string) (int, bool) {
 		n = n*10 + int(r-'0')
 	}
 	return n, true
+}
+
+// validateRealityDest 卡住"把节点变成内网探测器"的配置。
+//
+// REALITY 的服务端行为是：ClientHello 校验不过就把这条 TLS 连接原样转给 dest。
+// 如果 dest 是 127.0.0.1 / 内网地址 / 以 @ 开头的 unix socket，那么任何扫描器都能
+// 借节点的身份去探内网端口（连接失败与否、耗时、TLS 报错全都是信息）。
+// 面板允许管理员手填 dest，所以这条校验只能放在节点侧。
+func validateRealityDest(dest string) error {
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		return fmt.Errorf("xray: REALITY dest 为空")
+	}
+	if strings.HasPrefix(dest, "@") || strings.HasPrefix(dest, "//") {
+		return fmt.Errorf("xray: REALITY dest %q 是 unix socket 目标；"+
+			"REALITY 必须指向公网 TLS 站点，指向本地 socket 会让节点变成内网探测器", dest)
+	}
+	host := dest
+	if h, _, err := net.SplitHostPort(dest); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return fmt.Errorf("xray: REALITY dest %q 解析不出主机名", dest)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return fmt.Errorf("xray: REALITY dest 不能是 localhost")
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() || ip.IsMulticast() {
+			return fmt.Errorf("xray: REALITY dest %s 是私网/本机地址；"+
+				"REALITY 必须指向公网 TLS 站点（否则节点会被当作内网探测器使用）", host)
+		}
+	}
+	return nil
 }

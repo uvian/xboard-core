@@ -188,3 +188,10 @@ func mergeUsers(cur, added, deleted, modified []panel.UserInfo) []panel.UserInfo
 	}
 	return out
 }
+
+// ActiveConns 返回 usergate 当前托管的链路数（只有 xray 内核有这个概念）。
+//
+// 这个数字的价值是"可观测性即安全"：设备数/限速闸门是靠 vendored 补丁挂在
+// dispatcher 上的，一旦补丁在某次重 vendor 后失效，连接会照常建立、日志也照常安静，
+// 只有这个计数会掉回 0 —— 把它暴露到 /metrics 和面板上报里，故障才有信号。
+func ActiveConns() int64 { return usergate.ActiveConns() }

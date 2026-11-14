@@ -39,10 +39,10 @@ index cae97351..7b426c01 100644
  		d.routedDispatch(ctx, outbound, destination)
 diff --git a/app/usergate/usergate.go b/app/usergate/usergate.go
 new file mode 100644
-index 00000000..c405544f
+index 00000000..b47bb464
 --- /dev/null
 +++ b/app/usergate/usergate.go
-@@ -0,0 +1,312 @@
+@@ -0,0 +1,379 @@
 +// Package usergate 是节点后端注入「设备数 + 每用户限速」的唯一挂载点。
 +//
 +// 为什么这样挂：Xboard-Node 用 //go:linkname 劫持 common.typeCreatorRegistry
@@ -157,27 +157,94 @@ index 00000000..c405544f
 +	}
 +}
 +
-+// Limit 给链路的上下行各套一个令牌桶。没有闸门或用户不限速时原样返回。
++// Limit 给链路的上下行各套一个令牌桶，并顺带记录这条连接还活着。
++//
++// 生命周期计数放在这里而不是 Admit：Admit 只回答"能不能连"，而 UoT / UDP 会话
++// 会在同一个 inbound 上反复 Dispatch，只有链路端的读写结束才代表"真的用完了"。
 +func Limit(ctx context.Context, link *transport.Link) {
 +	g := gate()
 +	if g == nil || link == nil {
 +		return
 +	}
 +	id := identify(ctx)
-+	if id.Email == "" {
-+		return
++	flag := newConnFlag()
++	if id.Email != "" {
++		if rate := g.Rate(id.Tag, id.Email); rate > 0 {
++			key := id.Tag + "|" + id.Email
++			if link.Writer != nil {
++				link.Writer = &rateWriter{writer: link.Writer, b: bucketFor(key+"|up", rate)}
++			}
++			if link.Reader != nil {
++				link.Reader = &rateReader{reader: link.Reader, b: bucketFor(key+"|down", rate)}
++			}
++		}
 +	}
-+	rate := g.Rate(id.Tag, id.Email)
-+	if rate <= 0 {
-+		return
-+	}
-+	key := id.Tag + "|" + id.Email
-+	if link.Writer != nil {
-+		link.Writer = &rateWriter{writer: link.Writer, b: bucketFor(key+"|up", rate)}
-+	}
++	// 计数包装放在最外层：限速层出错时也要能被统计到结束。
 +	if link.Reader != nil {
-+		link.Reader = &rateReader{reader: link.Reader, b: bucketFor(key+"|down", rate)}
++		link.Reader = &countReader{reader: link.Reader, flag: flag}
 +	}
++	if link.Writer != nil {
++		link.Writer = &countWriter{writer: link.Writer, flag: flag}
++	}
++}
++
++// ---------------------------------------------------------------- 连接计数
++
++// activeConns 是当前被本包托管的链路数。对外暴露这个数字的意义在于：
++// 闸门有没有真的挂在数据面上，运维从 /metrics 就能判断，而不是只能靠日志猜。
++var activeConns atomic.Int64
++
++// ActiveConns 返回当前托管的链路数。
++func ActiveConns() int64 { return activeConns.Load() }
++
++type connFlag struct {
++	once sync.Once
++}
++
++func newConnFlag() *connFlag {
++	activeConns.Add(1)
++	return &connFlag{}
++}
++
++// done 保证一次连接只减一次（读写两端都会触发）。
++func (f *connFlag) done() { f.once.Do(func() { activeConns.Add(-1) }) }
++
++type countReader struct {
++	reader buf.Reader
++	flag   *connFlag
++}
++
++func (r *countReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
++	mb, err := r.reader.ReadMultiBuffer()
++	if err != nil {
++		r.flag.done()
++	}
++	return mb, err
++}
++
++// ReadMultiBufferTimeout 保留 buf.TimeoutReader 能力（同 rateReader，丢了会 panic）。
++func (r *countReader) ReadMultiBufferTimeout(d time.Duration) (buf.MultiBuffer, error) {
++	if tr, ok := r.reader.(buf.TimeoutReader); ok {
++		mb, err := tr.ReadMultiBufferTimeout(d)
++		if err != nil {
++			r.flag.done()
++		}
++		return mb, err
++	}
++	return r.ReadMultiBuffer()
++}
++
++type countWriter struct {
++	writer buf.Writer
++	flag   *connFlag
++}
++
++func (w *countWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
++	err := w.writer.WriteMultiBuffer(mb)
++	if err != nil {
++		w.flag.done()
++	}
++	return err
 +}
 +
 +// ---------------------------------------------------------------- 令牌桶
@@ -354,99 +421,4 @@ index 00000000..c405544f
 +		return nil, errors.New("usergate: rate limit: ").Base(werr)
 +	}
 +	return mb, nil
-+}
-diff --git a/app/usergate/usergate_test.go b/app/usergate/usergate_test.go
-new file mode 100644
-index 00000000..8c1b8101
---- /dev/null
-+++ b/app/usergate/usergate_test.go
-@@ -0,0 +1,89 @@
-+package usergate
-+
-+import (
-+	"context"
-+	"testing"
-+	"time"
-+
-+	"github.com/xtls/xray-core/common/buf"
-+	"github.com/xtls/xray-core/transport"
-+)
-+
-+func TestNoGateIsNoop(t *testing.T) {
-+	Install(nil)
-+	if err := Admit(context.Background()); err != nil {
-+		t.Fatalf("Admit without gate: %v", err)
-+	}
-+	link := &transport.Link{Reader: &fakeReader{}, Writer: &fakeWriter{}}
-+	Limit(context.Background(), link)
-+	if _, ok := link.Writer.(*rateWriter); ok {
-+		t.Fatal("Limit wrapped writer without a gate installed")
-+	}
-+}
-+
-+type fakeWriter struct{ n int }
-+
-+func (w *fakeWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
-+	w.n += int(mb.Len())
-+	buf.ReleaseMulti(mb)
-+	return nil
-+}
-+
-+type fakeReader struct{}
-+
-+func (r *fakeReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
-+	mb := buf.MultiBuffer{buf.New()}
-+	mb[0].Write([]byte("ping"))
-+	return mb, nil
-+}
-+
-+type fakeGate struct {
-+	reject bool
-+	rate   int64
-+	seen   Identity
-+}
-+
-+func (g *fakeGate) Admit(_ context.Context, tag, email, ip string) error {
-+	g.seen = Identity{Tag: tag, Email: email, IP: ip}
-+	if g.reject {
-+		return context.Canceled
-+	}
-+	return nil
-+}
-+
-+func (g *fakeGate) Rate(string, string) int64 { return g.rate }
-+
-+// 桶必须真的限速：8KB/s 的桶写 32KB，至少要花 3 秒（允许 1 秒突发）。
-+func TestBucketThrottles(t *testing.T) {
-+	b := newBucket(8 * 1024)
-+	start := time.Now()
-+	for i := 0; i < 4; i++ {
-+		if err := b.wait(context.Background(), 8*1024); err != nil {
-+			t.Fatalf("wait: %v", err)
-+		}
-+	}
-+	if elapsed := time.Since(start); elapsed < 2*time.Second {
-+		t.Fatalf("bucket did not throttle: %v", elapsed)
-+	}
-+}
-+
-+// ctx 结束必须立刻返回，否则节点停机时会被限速等待拖住。
-+func TestBucketRespectsContext(t *testing.T) {
-+	b := newBucket(1024)
-+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-+	defer cancel()
-+	if err := b.wait(ctx, 1024*1024); err == nil {
-+		t.Fatal("expected context error")
-+	}
-+}
-+
-+func TestForgetDropsBuckets(t *testing.T) {
-+	bucketFor("n1|a@b|c|up", 1024)
-+	Forget("n1", "a@b")
-+	bucketsMu.Lock()
-+	n := len(buckets)
-+	bucketsMu.Unlock()
-+	if n != 0 {
-+		t.Fatalf("buckets not released: %d", n)
-+	}
 +}

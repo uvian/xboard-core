@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -268,11 +269,23 @@ func (c *Client) etagUser() string { c.mu.RLock(); defer c.mu.RUnlock(); return 
 // redact 去掉 *url.Error 里的完整 URL（含 ?token=），避免令牌经错误日志外泄。
 // resty 把底层错误包成 *url.Error，它的 Error() 会打印 "Get \"https://…?token=…\": …"。
 func redact(err error) error {
+	if err == nil {
+		return nil
+	}
 	var ue *url.Error
 	if errors.As(err, &ue) {
-		return fmt.Errorf("%s %s: %w", ue.Op, "<redacted-url>", ue.Err)
+		return fmt.Errorf("%s %s: %s", ue.Op, "<redacted-url>", scrub(ue.Err.Error()))
 	}
-	return err
+	return fmt.Errorf("%s", scrub(err.Error()))
+}
+
+// 面板把 node token 放在 query 里（app/Http/Middleware/ServerV2.php 只读 input('token')），
+// 于是任何带 URL 的错误串、面板回显的 body 都可能把令牌抄进日志。
+// scrub 对自由文本做兜底清洗：出错路径一律先过它，再落盘。
+var secretPattern = regexp.MustCompile(`(?i)((?:token|api_key|machine_id)=)[^&\s"'<>]+`)
+
+func scrub(s string) string {
+	return secretPattern.ReplaceAllString(s, "${1}<redacted>")
 }
 
 func truncate(b []byte, n int) string {

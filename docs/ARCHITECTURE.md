@@ -22,15 +22,19 @@
 
 ### ADR-1 内核基线 = Xray-core v26.11.9
 
-理由：v26.10.31 是首个默认 `lc.SetMultipathTCP(false)` 的版本（`transport/internet/system_listener.go:92-94`），对应 CVE-2026-98432（Linux IPv4 MPTCP 监听 socket UAF，CVSS 9.8，被动路径即可触发）。继续留在 v26.3.27（Xboard-Node 现状）等于把每个节点暴露在该漏洞下。
+理由：v26.10.31 是首个默认 `lc.SetMultipathTCP(false)` 的版本（`transport/internet/system_listener.go:92-94`），对应 CVE-2026-98432（Linux IPv4 Record Route/Timestamp 选项 UAF，CVSS 9.8，被动路径即可触发）。继续留在 v26.3.27（Xboard-Node 现状）等于把每个节点暴露在该漏洞下。
+
+**边界必须说清**：关掉 MPTCP 只是**收缩暴露面**，不是修复。真正的修复在 Linux 内核（5.10.272 / 5.15.223 / 6.1.190 / 6.6.159 / 6.12.113 / 6.18.56 / 7.2.10 及以上）。节点跑在未打补丁的内核上时，安全保证仍要由「内核升级」兑现，见 docs/SECURITY.md 的运维清单。
 
 顺带拿到的：印度 CCA 三张根证书移除（v26.10.21）、`allowInsecure` 的真正替代（`pinnedPeerCertSha256`/`verifyPeerCertByName`）、REALITY 的 `mldsa65Seed`/`xver`/`limitFallback*`。
 
 **v26.10.31 → v26.11.9（2026-11-09）**：`app/dispatcher` 一行未动（补丁上下文零冲突），`infra/conf/xray.go`、`transport_security.go`、`policy.go`、`proxy/*` 均未变。与本项目相关的三处：
 
-1. `infra/conf/log.go` 的 JSON tag `loglevel` → `logLevel`（我们直接构造 `conf.LogConfig` 结构体，不受影响；但运维手写 JSON 配置时旧键会被忽略，见 §5）；
-2. `proxy/freedom` 的 `finalRules` 新增 `logLevel`、`blockDelay` 更名 `delay`（旧的 `blockDelay` 仍接受并打弃用告警）；**`action != block` 的规则带 `delay`/`logLevel` 会直接报错** —— 我们的 allow 规则只写 `action/network/ip`，安全；
-3. 新增 **XDRIVE 传输**（`transport/internet/xdrive`，`xdriveSettings`，可作入站），面板目前不下发，我们的传输白名单会明确报错而不是静默降级。
+1. `infra/conf/log.go` 的 JSON tag `loglevel` → `logLevel`（我们直接构造 `conf.LogConfig` 结构体，不受影响；但运维手写 JSON 配置时旧键会被忽略）；
+2. `proxy/freedom` 的 `finalRules` 新增 `logLevel`、`blockDelay` 更名 `delay`（旧的 `blockDelay` 仍接受并打弃用告警）；**`action != block` 的规则带 `delay`/`logLevel` 会直接报错** —— 我们的 allow 规则只写 `action/network/ip`，安全，但以后别加；
+3. `infra/conf/geodata.go` 会把 geodata 官方 `.dat` 地址自动改写成 `.gz`（我们不用 geodata，无感）。
+
+一条纠错（避免以后误判）：**XDRIVE 传输不是 v26.11.9 新增**，`transport/internet/xdrive/` 在 v26.10.31 就存在，本次只是优化；`xtls/reality` 换 utls fork 后 `HelloChrome_Auto` 的指向变了（`tls.go:278` 加了别名），也不是 xray 侧新增默认指纹。我们的传输白名单仍然只放行 tcp/ws/grpc/httpupgrade/xhttp，遇到 `xdrive` 会明确报错而不是静默降级。
 
 ### ADR-2 零协议补丁：xray 只跑 vless/vmess/trojan/ss2022
 

@@ -48,6 +48,7 @@ func run() error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level(cfg.Log.Level)})))
 	xray.SetLogLevel(cfg.Log.Level)
 	xray.SetAllowPrivateTargets(cfg.Kernel.AllowPrivateTargets)
+	singbox.SetAllowPrivateTargets(cfg.Kernel.AllowPrivateTargets)
 	xray.SetStrictClientVer(cfg.Kernel.StrictClientVer)
 
 	// 纵深防御：MPTCP 是 CVE-2026-98432 的触发面。vendored 的 v26.11.9 在
@@ -497,6 +498,8 @@ func (r *runner) report(ctx context.Context) error {
 		return nil
 	}
 	// 先把内核侧的累计计数采成增量，再 Drain 出本拍要上报的量。
+	// 先把内核侧的活动连接数同步出来：metrics 与面板上报共用同一个值。
+	r.metrics.ActiveConns.Store(xray.ActiveConns())
 	if s, ok := r.kernel.(kernel.TrafficSampler); ok {
 		for uid, d := range s.SampleTraffic() {
 			r.traffic.Add(uid, d[0], d[1])

@@ -32,6 +32,12 @@ func Build(node *panel.NodeConfig, users []panel.UserInfo) (map[string]any, erro
 		return nil, fmt.Errorf("singbox: 没有可用用户，拒绝启动空节点")
 	}
 
+	// 闸门（设备数 / 限速）挂在 xray 的 dispatcher 上，sing-box 子进程侧没有等价钩子。
+	// 面板给这些用户配了限制却不生效，比直接不起更危险：运营者以为限住了。
+	if err := checkLimits(users); err != nil {
+		return nil, err
+	}
+
 	tlsCfg, err := buildTLS(node)
 	if err != nil {
 		return nil, err
@@ -87,7 +93,7 @@ func Build(node *panel.NodeConfig, users []panel.UserInfo) (map[string]any, erro
 		}
 	}
 
-	return map[string]any{
+	cfg := map[string]any{
 		"log": map[string]any{
 			"level":     "warn",
 			"timestamp": true,
@@ -96,7 +102,17 @@ func Build(node *panel.NodeConfig, users []panel.UserInfo) (map[string]any, erro
 		"outbounds": []any{
 			map[string]any{"type": "direct", "tag": "direct"},
 		},
-	}, nil
+	}
+	// 私网兜底：sing-box 侧没有闸门，也绝不能变成内网跳板（云上 169.254.169.254 = 实例凭证）。
+	if !allowPrivateTargets {
+		cfg["route"] = map[string]any{
+			"rules": []any{
+				map[string]any{"ip_cidr": privateCIDRs, "action": "reject"},
+			},
+			"final": "direct",
+		}
+	}
+	return cfg, nil
 }
 
 func inboundType(proto string) string {
@@ -196,4 +212,37 @@ func orDefault(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// allowPrivateTargets 与 xray 侧同名开关语义一致：默认关闭，节点不得访问私网/回环/云元数据。
+var allowPrivateTargets bool
+
+// SetAllowPrivateTargets 由启动流程统一设置，保证两个内核的安全默认一致。
+func SetAllowPrivateTargets(v bool) { allowPrivateTargets = v }
+
+// privateCIDRs 与 xray 侧 privateTargets 保持一致（RFC1918 + 回环 + 链路本地 + CGNAT + IPv6 本地）。
+var privateCIDRs = []string{
+	"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+	"169.254.0.0/16", "100.64.0.0/10",
+	"::1/128", "fc00::/7", "fe80::/10",
+}
+
+// checkLimits 在 sing-box 侧做 fail-closed：配了设备数或限速就直接拒绝启动，
+// 而不是起一个"限制形同虚设"的节点。要用这些能力请把该节点切到 xray 内核。
+func checkLimits(users []panel.UserInfo) error {
+	var dev, spd int
+	for _, u := range users {
+		if u.DeviceLimit > 0 {
+			dev++
+		}
+		if u.SpeedLimit > 0 {
+			spd++
+		}
+	}
+	if dev > 0 || spd > 0 {
+		return fmt.Errorf("singbox: 该节点有 %d 个用户配了设备数限制、%d 个配了限速，"+
+			"而设备数/限速闸门只存在于 xray 内核（dispatcher 钩子）；"+
+			"请把节点内核改为 xray，或在面板里去掉这些限制", dev, spd)
+	}
+	return nil
 }

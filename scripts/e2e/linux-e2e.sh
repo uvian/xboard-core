@@ -15,6 +15,8 @@
 #   8 设备数闸门：device_limit=1 时第二条连接的 IP 被拒
 #   9 限速：speed_limit 生效后吞吐下降
 #  10 WS 推送：sync.config / sync.users 到达节点（需 ext-pcntl）
+#  11 REALITY：面板 reality_settings（DB snake_case）→ 面板归一化 → 节点 → REALITY 客户端真实握手
+#  12 mihomo 回归：mihomo 作为客户端过 REALITY（FlClash / Clash Verge Rev / Nikki 同一内核）
 set -uo pipefail
 
 E2E=${E2E:-/opt/xboard-e2e}
@@ -371,6 +373,57 @@ JSON
   else
     bad "6c REALITY 数据面不通：${rgot:-<empty>}"
     grep -aiE "REALITY|rejected|failed|error" "$E2E/logs/node2.log" | tail -5
+  fi
+fi
+
+say "6d. mihomo 客户端回归（FlClash / Clash Verge Rev / Nikki 用的是同一个内核）"
+# 为什么非测不可：mihomo 在 ClientHello 里自报 1.8.2，而我们所有 REALITY 相关判断
+# （minClientVer 守卫、mldsa65、xver）都以它为前提；用 xray 客户端测通不等于 mihomo 能连。
+MIHOMO_VER=${MIHOMO_VER:-v1.19.34}
+if [ -z "${RDEST:-}" ]; then
+  printf '  \033[33mSKIP\033[0m 6d 没有 REALITY dest，跳过 mihomo 回归\n'
+else
+  if [ ! -x "$E2E/bin/mihomo" ]; then
+    curl -fsSL --retry 2 -o "$E2E/bin/mihomo.gz" \
+      "https://github.com/MetaCubeX/mihomo/releases/download/$MIHOMO_VER/mihomo-linux-amd64-compatible-$MIHOMO_VER.gz" \
+      >"$E2E/logs/mihomo-dl.log" 2>&1 && gunzip -f "$E2E/bin/mihomo.gz" && chmod +x "$E2E/bin/mihomo"
+  fi
+  if [ -x "$E2E/bin/mihomo" ]; then
+    MPORT=$((PORT_SOCKS+6))
+    cat > "$E2E/node/mihomo.yaml" <<YAML
+mixed-port: $MPORT
+allow-lan: false
+log-level: debug
+mode: rule
+proxies:
+  - name: e2e-reality
+    type: vless
+    server: 127.0.0.1
+    port: $((PORT_NODE+1))
+    uuid: $UUID
+    network: tcp
+    tls: true
+    udp: false
+    servername: $RDEST
+    reality-opts:
+      public-key: $RPUB
+      short-id: "0123abcd"
+    client-fingerprint: chrome
+rules:
+  - MATCH,e2e-reality
+YAML
+    nohup "$E2E/bin/mihomo" -d "$E2E/node" -f "$E2E/node/mihomo.yaml" >"$E2E/logs/mihomo.log" 2>&1 &
+    for i in $(seq 1 30); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$MPORT" && break; sleep 0.5; done
+    mgot=$(curl -sS --max-time 25 --socks5-hostname 127.0.0.1:$MPORT "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
+    if echo "$mgot" | grep -q hello-e2e; then
+      ok "6d mihomo $MIHOMO_VER REALITY 握手成功并取到源站"
+    else
+      bad "6d mihomo REALITY 不通：${mgot:-<empty>}"
+      grep -aiE "reality|error|fail|reject" "$E2E/logs/mihomo.log" | tail -5
+      tail -5 "$E2E/logs/node2.log"
+    fi
+  else
+    bad "6d mihomo 下载失败（见 mihomo-dl.log）"
   fi
 fi
 

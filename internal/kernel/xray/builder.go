@@ -29,20 +29,43 @@ func Build(node *panel.NodeConfig, users []panel.UserInfo) (*core.Config, error)
 	if err != nil {
 		return nil, err
 	}
-	outbound, err := buildOutbounds(allowPrivateTargets)
+	custom, err := buildCustomOutbounds(node)
 	if err != nil {
 		return nil, err
 	}
+	outbound, err := buildOutbounds(allowPrivateTargets, custom)
+	if err != nil {
+		return nil, err
+	}
+	known := map[string]bool{outboundTagDirect: true, outboundTagBlock: true}
+	for _, ob := range custom {
+		known[ob.Tag] = true
+	}
+	// 路由必须在出站确定之后编译：规则里的 outboundTag 要能对上真实存在的出站。
+	routerCfg, err := buildRouting(node, known, allowPrivateTargets)
+	if err != nil {
+		return nil, err
+	}
+
+	apps := []*serial.TypedMessage{
+		serial.ToTypedMessage(logConfig(logLevel)),
+		serial.ToTypedMessage(&proxyman.InboundConfig{}),
+		serial.ToTypedMessage(&proxyman.OutboundConfig{}),
+		serial.ToTypedMessage(policyConfig()),
+		serial.ToTypedMessage(&stats.Config{}),
+		// 关键：必须显式塞 dispatcher 的 Config，vendored xray 的 usergate 钩子才会被实例化。
+		serial.ToTypedMessage(&dispatcher.Config{}),
+	}
+	if routerCfg != nil {
+		// 面板 routes / custom_routes 只有注册 router 才会生效；没配就不注册，少一个攻击面。
+		rc, err := routerCfg.Build()
+		if err != nil {
+			return nil, fmt.Errorf("xray: build router: %w", err)
+		}
+		apps = append(apps, serial.ToTypedMessage(rc))
+	}
 	return &core.Config{
-		App: []*serial.TypedMessage{
-			serial.ToTypedMessage(logConfig(logLevel)),
-			serial.ToTypedMessage(&proxyman.InboundConfig{}),
-			serial.ToTypedMessage(&proxyman.OutboundConfig{}),
-			serial.ToTypedMessage(policyConfig()),
-			serial.ToTypedMessage(&stats.Config{}),
-			// 关键：必须显式塞 dispatcher 的 Config，vendored xray 的 usergate 钩子才会被实例化。
-			serial.ToTypedMessage(&dispatcher.Config{}),
-		},
+		App:      apps,
 		Inbound:  []*core.InboundHandlerConfig{inbound},
 		Outbound: outbound,
 	}, nil
@@ -202,17 +225,17 @@ func freedomSettings(allowPrivate bool) string {
 	return string(b)
 }
 
-func buildOutbounds(allowPrivate bool) ([]*core.OutboundHandlerConfig, error) {
+func buildOutbounds(allowPrivate bool, custom []*conf.OutboundDetourConfig) ([]*core.OutboundHandlerConfig, error) {
 	// freedom 的 domainStrategy 在 v26 已迁到 sockopt.domainStrategy；写在 freedom 里会告警并被自动迁移。
-	out := make([]*core.OutboundHandlerConfig, 0, 2)
+	out := make([]*core.OutboundHandlerConfig, 0, 2+len(custom))
 	for _, spec := range []struct {
 		tag      string
 		protocol string
 		settings string
 		sockopt  *conf.SocketConfig
 	}{
-		{tag: "direct", protocol: "freedom", settings: freedomSettings(allowPrivate), sockopt: &conf.SocketConfig{DomainStrategy: "UseIP"}},
-		{tag: "block", protocol: "blackhole", settings: `{}`},
+		{tag: outboundTagDirect, protocol: "freedom", settings: freedomSettings(allowPrivate), sockopt: &conf.SocketConfig{DomainStrategy: "UseIP"}},
+		{tag: outboundTagBlock, protocol: "blackhole", settings: `{}`},
 	} {
 		raw := json.RawMessage(spec.settings)
 		oc := &conf.OutboundDetourConfig{Protocol: spec.protocol, Tag: spec.tag, Settings: &raw}
@@ -222,6 +245,15 @@ func buildOutbounds(allowPrivate bool) ([]*core.OutboundHandlerConfig, error) {
 		h, err := oc.Build()
 		if err != nil {
 			return nil, fmt.Errorf("xray: build outbound %s: %w", spec.tag, err)
+		}
+		out = append(out, h)
+	}
+	// direct / block 之后才是面板的自定义出站：顺序决定"未命中任何规则时走第一个出站"，
+	// 也就是默认仍然直连，运维加的出站不会意外变成默认出口。
+	for _, oc := range custom {
+		h, err := oc.Build()
+		if err != nil {
+			return nil, fmt.Errorf("xray: build custom outbound %s: %w", oc.Tag, err)
 		}
 		out = append(out, h)
 	}
