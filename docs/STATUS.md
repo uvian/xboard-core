@@ -421,6 +421,35 @@ xray 在日志里只打前半段）—— 服务端主动丢弃，不是我们�
 3. 文档：`docs/PANEL-IMPROVEMENTS.md` P0-4、`SECURITY.md` §3.1 补一句 REALITY 的客户端前提。
 
 
+### 9.8 独立复核（reality-auditor）：三处真问题与处置（2026-11-14）
+
+复核是只读的、要求"逐条证伪"，结论 **PARTIAL**：根因、版本边界、补丁可应用性、6d 正向断言全部成立，
+但抓到三处我们自己没看见的问题 —— 三条都成立，已全部修：
+
+| 编号 | 问题 | 为什么是问题 | 处置 |
+| --- | --- | --- | --- |
+| M1 | 6e 没有守卫 | 6c/6d 都在没有 REALITY dest 时 SKIP，6e 落到顶层无条件执行：`cp` 源文件不存在 → mihomo 起不来 → curl 空 → 报"反向对照未复现"。**出网受限的 runner 上，这套新加的闸门给出的是与机制无关的红** | 6e 以 `M6D=ok` 为前置，否则 `skip`；`M6D` 由 6d 的三条分支分别写 ok/fail/skip |
+| M2 | 6e 的 ok 文案比断言强 | 文案写"节点侧日志同时出现 processed invalid connection"，但脚本只 grep 了 mihomo 侧；6d 已失败时也可能"成立"，等于用未证明的前提证明结论 | 真比对 `node2.log` 的 `REALITY: processed invalid connection` 计数增量（本次 +10），并把 6d 结果计入前置 |
+| M3 | README 的 FlClash 提交号是错的 | `024245dc` 的提交信息是 `fix: hold an unusable url-test pick for a second`（改 `adapter/outboundgroup/urltest.go`），与 REALITY 无关 —— 日期对上、内容全错 | 删掉 hash，改成"mihomo v1.19.34 实测可用（E2E 6d/6e 双向断言）" |
+
+顺手收下的建议项：
+
+- 改 6e 的 yaml 改成"临时文件 + `os.replace`"，并在起进程前**回读校验**：键确实被删、`mixed-port` 确实换了
+  —— 精确子串没命中时，原先会静默变成"带开关也能通过"的假对照；
+- 6d 启动前 `pkill` 残留 mihomo，并加 `trap cleanup EXIT`：否则重跑时上一轮那个持有**作废 public-key**
+  的进程还在监听，`ss` 看到端口在听就直接 curl 旧进程 → 6d 假红；
+- `SKIP` 单独计数，`STRICT=1`（默认）时跳过即失败：避免"环境不满足 → 三段全 SKIP → 仍打印全部通过"；
+- `TLS' communication` 用真实撇号（原先用 `.` 通配碰运气）；依赖检查补 `python3`。
+
+复核同时确认"不是问题"的部分（省得下次重查）：`TcpMptcp:false`/`AcceptProxyProtocol:false` 真生效；
+源 IP 不可经 XFF 伪造；`allow_insecure` 上游硬报错；`privateKey`/`shortIds`/`minClientVer` 上游已校验；
+子进程 `exec.Command` 无 shell 注入；vendored xray 与上游 v26.11.9 仅差 usergate 补丁。
+
+修完重跑：`e2e` run **43594852495**，**PASS=26 FAIL=0 SKIP=0**，其中
+`PASS 6e 反向对照成立：去掉开关后 mihomo 报认证失败，节点侧 processed invalid connection +10`
+—— 这条现在两端都有证据。
+
+
 ### 9.6 仍未做（明确列着）
 
 - `usergate` 的 UDP 会话（UoT）与 TCP 分别计数，`active_conns` 语义按"链路"而非"用户连接"；
