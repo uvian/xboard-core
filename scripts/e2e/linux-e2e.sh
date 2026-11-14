@@ -237,7 +237,7 @@ if [ -x "$E2E/bin/xray-pristine" ]; then
   echo "  纯净二进制结果: ${p2:-<empty>}"
   if echo "$p2" | grep -q hello-e2e; then
     bad "5c 纯净二进制竟然通了（说明私网目标没被拦）"
-  elif grep -q "blocked target" "$E2E/logs/stock2.log"; then
+  elif grep -qE "blocked by a finalrule|blocked target" "$E2E/logs/stock2.log"; then
     ok "5c 上游默认拦截私网目标（freedom defaultBlockPrivateRule 生效）"
   else
     bad "5c 纯净二进制失败原因不是私网拦截，需另查"
@@ -279,7 +279,7 @@ echo "  对照结果: ${stock:-<empty>}"
 # 不是我们的配置问题；反过来也证明「放行私网」必须由节点侧显式打开。
 if echo "$stock" | grep -q hello-e2e; then
   bad "6b 纯净 Xray 竟然放行了私网目标（上游行为变了？）"
-elif grep -q "blocked target" "$E2E/logs/stock.log"; then
+elif grep -qE "blocked by a finalrule|blocked target" "$E2E/logs/stock.log"; then
   ok "6b 纯净 v26 服务端同样拦截私网目标（证明放行必须显式打开）"
 else
   bad "6b 纯净 Xray 失败原因不是私网拦截，需另查"
@@ -413,14 +413,25 @@ rules:
   - MATCH,e2e-reality
 YAML
     nohup "$E2E/bin/mihomo" -d "$E2E/node" -f "$E2E/node/mihomo.yaml" >"$E2E/logs/mihomo.log" 2>&1 &
-    for i in $(seq 1 30); do curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$MPORT" && break; sleep 0.5; done
+    for i in $(seq 1 30); do ss -lntp 2>/dev/null | grep -q ":$MPORT " && break; sleep 0.5; done
+    if ! ss -lntp 2>/dev/null | grep -q ":$MPORT "; then
+      echo "  --- mihomo 没有监听 $MPORT ---"; tail -30 "$E2E/logs/mihomo.log" || true
+    fi
     mgot=$(curl -sS --max-time 25 --socks5-hostname 127.0.0.1:$MPORT "http://127.0.0.1:$PORT_ORIGIN/small.txt" || true)
     if echo "$mgot" | grep -q hello-e2e; then
       ok "6d mihomo $MIHOMO_VER REALITY 握手成功并取到源站"
     else
       bad "6d mihomo REALITY 不通：${mgot:-<empty>}"
-      grep -aiE "reality|error|fail|reject" "$E2E/logs/mihomo.log" | tail -5
-      tail -5 "$E2E/logs/node2.log"
+      echo "  --- mihomo -v ---"; "$E2E/bin/mihomo" -v 2>&1 | head -3
+      echo "  --- mihomo.yaml ---"; sed -n '1,40p' "$E2E/node/mihomo.yaml"
+      echo "  --- mihomo.log (tail 40) ---"; tail -40 "$E2E/logs/mihomo.log" || true
+      echo "  --- 直连探测（绕开 mihomo，确认源站还在） ---"
+      curl -sS --max-time 5 "http://127.0.0.1:$PORT_ORIGIN/small.txt" | head -c 80 || true
+      echo
+      echo "  --- 再走一次 mihomo，带 -v ---"
+      curl -sS -v --max-time 20 --socks5-hostname "127.0.0.1:$MPORT" \
+        "http://127.0.0.1:$PORT_ORIGIN/small.txt" 2>&1 | tail -25 || true
+      echo "  --- node2.log (tail 25) ---"; tail -25 "$E2E/logs/node2.log"
     fi
   else
     bad "6d mihomo 下载失败（见 mihomo-dl.log）"

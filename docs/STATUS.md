@@ -279,3 +279,95 @@ gh workflow run e2e.yml --repo uvian/xboard-core
 ```
 
 首次跑要 `make vendor` + 全量编译 vendored Xray-core（~5–8 分钟），之后基线约 4–5 分钟。
+
+## 9. 2026-11-14：跟上面板 `d826a3b`、内核 `v26.11.9`、审计结论落地
+
+### 9.1 面板（cedar2025/Xboard）
+
+- 当前 HEAD 是 `d826a3b`（2026-11-02，`fix(auth): normalize email identities consistently`），
+  我们原基线 `e68fec5` 之后只有这一个提交，无 tag、无 release。
+- **节点契约零变化**：该提交只动了 `app/Models/User.php`、`app/Http/Requests/*`、
+  `app/Services/{Login,Register,User,MailLink}Service.php`、`app/Utils/Helper.php` 与一个迁移，
+  没有 `ServerService.php` / `Server/UniProxy` / `ServerV2.php` / `app/WebSocket/*`。
+  也就是说这次面板更新**不需要节点侧改一行代码**，E2E 只用来证伪（结论：证伪失败，契约稳）。
+- 面板侧部署注意：新代码依赖 PHP **intl**（`\Normalizer` / `idn_to_ascii`），
+  但 `composer.json` 没声明任何 `ext-*`。`composer.lock` 里有 `symfony/polyfill-intl-*`，
+  缺 intl 不会直接 fatal，但归一化结果可能与装了 intl 的实例不一致（多语言邮箱会分叉）。
+  E2E 里已显式装 `php-intl`。
+- 我们的面板补丁 `panel-patch/0001-*.patch` 在 `d826a3b` 上 `git apply --check` 通过。
+
+### 9.2 内核（XTLS/Xray-core `v26.11.9`，2026-11-09，`676eaf66`）
+
+- 24 个提交、60 文件 `+4393/-524`，但 **`app/dispatcher` 一个字节没动**
+  （`default.go` 在两个 tag 上的 blob 哈希相同），usergate 补丁的上下文零冲突。
+- 与我们有交集的改动：
+  - `infra/conf/log.go`：JSON tag `loglevel` → `logLevel`。我们走 `conf.LogConfig{...}.Build()` 结构体，
+    不受影响；**手写 JSON 配置的运维会被静默忽略旧键**。
+  - `proxy/freedom`：`finalRules` 的 `blockDelay` 更名 `delay`（旧键仍接受但打弃用警告），
+    新增 `logLevel`；`action != block` 的规则带这两个字段会**直接报错**。
+    我们的 `allow_private_targets` 放行规则只写 `action/network/ip`，安全。
+  - 新增传输 XDRIVE（`transport/internet/xdrive`）。面板不下发，我们的传输白名单会明确报错。
+  - `github.com/xtls/reality` 升到 `v0.0.0-20261108101329-4bb46b2afd8b`，
+    `MinClientVer` 判定逻辑与旧版逐字节一致；uTLS 换成 XTLS fork，默认指纹 `hellochrome_155`。
+  - `common/buf/io.go`：`TimeoutWrapperReader.ReadMultiBufferTimeout` 超时改为返回 `buf.ErrReadTimeout`
+    （之前返回 `nil, nil`）。我们的 `rateReader`/`countReader` 委派底层实现，自动跟随。
+- 重新 vendor 流程（**改补丁必须走这条**）：
+  1. `_probe/xu` 检出目标 tag，保持 clean；
+  2. 把我们 `third_party/xray` 的 `app/usergate/usergate.go` 与 `app/dispatcher/default.go` 覆盖进去；
+  3. `git add -N app/usergate` → `git diff --src-prefix=a/ --dst-prefix=b/ > patches/0001-usergate.patch`；
+  4. `git rm --cached -r app/usergate` + `rm -rf app/usergate` + `git checkout -- app/dispatcher/default.go`；
+  5. 校验：拷贝干净上游 + `patch -p1 --forward`，两个文件必须与 `third_party/xray` 里的一致（IDENTICAL）。
+  补丁必须是 **LF**：`Set-Content`/多数 Windows 编辑器会写 CRLF+BOM，`git apply` 直接失败。
+
+### 9.3 安全审计（`_research/security-audit.md`，独立 Agent，逐条复核）
+
+审计给出的 CRITICAL 一条、HIGH 五条，本轮的处置：
+
+| 编号 | 结论 | 处置 |
+| --- | --- | --- |
+| C-01 | 私网/回环/云元数据可被付费用户访问 | **成立但需修正**：上游 `freedom.getDefaultFinalRule` 靠 `session.Inbound.Name` 判定，而该字段全仓只有 `vless`/`vmess` 的 inbound 会赋值（`proxy/vless/inbound/inbound.go:534`、`proxy/vmess/inbound/inbound.go:272`）→ **trojan / shadowsocks 入站确实默认不拦私网**。已在 router 层兜底（与协议无关） |
+| H-01 | token 可能进日志 | `redact` 不再只认 `*url.Error`：所有错误串先过 `scrub()`，清洗 `token/api_key/machine_id` |
+| H-02 | sing-box 节点没有闸门 | 改成 **fail-closed**：用户配了 `device_limit`/`speed_limit` 时拒绝启动 |
+| H-03 | `active_conns` 恒为 0 | usergate 在 `Limit` 里托管链路并计数，`ActiveConns()` 接到 `/metrics` 与面板上报 |
+| H-04 | 空 email 时 Admit fail-open | 保留（匿名入站无身份可比），已在代码注释写明副作用；启用 `fallbacks` 前需重新评估 |
+| H-05 | REALITY dest / 证书路径无校验 | `validateRealityDest` 拒绝 unix socket、localhost、私网/回环/链路本地地址；dest 缺省回落也过校验 |
+
+顺带修的真问题：
+
+- **面板路由之前只解析不生效**：`v2_server_route` 下发到 `routes` 后我们只塞进结构体，
+  从未进内核。现在 `internal/kernel/xray/routing.go` 负责编译（`direct`/`proxy`/`block`），
+  并且 `custom_outbounds` 里被引用的 tag 必须存在，否则报错（而不是静默走默认出口）。
+- `geosite:`/`geoip:` 规则在缺少 `geosite.dat`/`geoip.dat` 时给出可操作的中文错误，
+  而不是让上游抛 `common/geodata: failed to open geosite.dat`。
+
+### 9.4 私网兜底为什么放在 router 层
+
+上游设计是"按入站协议名决定是否拦私网"，但名字只有两个协议会填。我们不改上游行为，
+而是在 router 里插一条 `私网 CIDR → block`，并且：
+
+- 只要 `allow_private_targets=false`（默认）**就无条件注册 router**，哪怕面板一条路由都没配；
+- `DomainStrategy=IpIfNonMatch`：让"域名指向内网"的情况也能命中（纯 `AsIs` 只能拦 IP 字面量）；
+- `allow_private_targets=true` 时不注册这条规则，也不启用 `IpIfNonMatch`（运维显式要求回源内网时才这么做）。
+
+代价是多一次域名解析（仅在有兜底规则时），换来的是"节点不会变成内网跳板"这个确定性。
+
+### 9.5 E2E 新增两段
+
+- **6c REALITY 节点**：临时生成 x25519 密钥 → 从
+  `www.microsoft.com / www.apple.com / www.cloudflare.com / swdist.apple.com` 里挑一个 443 可达的
+  dest（REALITY 服务端拨 dest 用 uTLS + `InsecureSkipVerify` 仅当 `sni==""`，所以 dest 必须有合法证书）
+  → 用 PHP 夹具写入 `tls=2` 的节点（DB 里是 snake_case 的 `reality_settings`）
+  → 断言面板 API 归一化出 `mldsa65Seed`/`xver` → 起第二个节点实例 → 断言内核启动、端口监听、
+  没有 minClientVer 误告警 → 起 REALITY 客户端取回源站内容。
+- **6d mihomo 回归**：下载 `mihomo v1.19.34`，用 `reality-opts{public-key,short-id}` +
+  `client-fingerprint: chrome` 走同一 REALITY 节点。这条是回归闸门：mihomo 的 REALITY 客户端
+  在 `component/tls/reality.go:74-76` 写死自报版本 `1.8.2`，一旦上游（或我们的默认值）把
+  `minClientVer` 设成 ≥26.x，这条断言会立刻红。
+
+### 9.6 仍未做（明确列着）
+
+- `usergate` 的 UDP 会话（UoT）与 TCP 分别计数，`active_conns` 语义按"链路"而非"用户连接"；
+- 机器模式的 `sync.nodes` / `sync.devices` 只做 runner 增删，`sync.devices` 仍未消费；
+- ECH：`internal/kernel/xray` 只解析 `tls_settings.ech`，未真正下发；
+- 面板补丁只做了 `php -l` 与 E2E 单实例验证，未在真实多节点生产面板上灰度；
+- `sing-box` 侧没有设备数/限速闸门（这是 fail-closed 策略成立的前提，不是待修项）。

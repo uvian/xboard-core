@@ -8,6 +8,7 @@
 > [docs/CONTRACT.md](docs/CONTRACT.md)（与面板的逐字段契约，含证据行号）·
 > [docs/PANEL-PATCH.md](docs/PANEL-PATCH.md)（面板补丁：为什么动、怎么装、怎么回滚）·
 > [docs/STATUS.md](docs/STATUS.md)（已实现 / 未实现 / 怎么验）·
+> [SECURITY.md](SECURITY.md)（威胁模型 / 安全默认值 / 攻击面与防护 / 部署清单）
 > [docs/PANEL-IMPROVEMENTS.md](docs/PANEL-IMPROVEMENTS.md)（面板更长期的改造清单）
 
 ## 为什么不是继续用现成的两个

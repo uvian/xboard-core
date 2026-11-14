@@ -77,6 +77,48 @@ Xboard-Node 的 health server（`cmd/xboard-node/main.go:76`）无鉴权且默�
 - 只有用户增删改 → `inbound.Manager.GetHandler` + `AddUser/RemoveUser`，不动内核（不断线）；
 - 304 复用：面板用 ETag + msgpack，空轮询成本接近 0（沿用 v2node 的做法）。
 
+### ADR-8 私网兜底放在 router 层，不依赖上游 per-inbound 规则
+
+**背景**：`allow_private_targets=false`（默认）时，我们希望节点绝不把用户流量送到
+`127.0.0.1` / RFC1918 / `169.254.169.254`。最开始的做法是给 freedom 出站加一条让私网通过的
+`finalRules`（给联调用的开关），并把"默认拦截"寄托在上游
+`proxy/freedom/freedom.go:161-180 getDefaultFinalRule`。
+
+**问题**：那条默认规则按 `session.Inbound.Name` 判定，而该字段在整个上游只有两处赋值——
+`proxy/vless/inbound/inbound.go:534`（`"vless"`）与 `proxy/vmess/inbound/inbound.go:272`（`"vmess"`）。
+`app/proxyman/inbound/worker.go` 构造 `session.Inbound` 时**不填 Name**，于是
+**trojan / shadowsocks 入站的默认规则恒为 nil**：付费用户用 trojan 节点就能访问节点本机的
+`127.0.0.1:8090`（`/metrics`、健康检查都没有鉴权）、整个内网段、以及云厂商的实例元数据接口。
+
+**决策**：在 router 层兜底，而不是修补 freedom 或给上游打协议级补丁。
+
+- `allow_private_targets=false` 时**无条件注册 router**（哪怕面板一条路由都没配），
+  第一条规则恒为 `{type: field, ip: [9 个私网 CIDR], outboundTag: block}`；
+- `DomainStrategy = IpIfNonMatch`：纯 `AsIs` 只能拦 IP 字面量，"域名解析到内网"会漏；
+- `allow_private_targets=true` 时不注册这条规则，也不启用 `IpIfNonMatch`（少一次解析、少一次 DNS 泄漏）；
+- sing-box 侧注入等价的 `route.rules[].ip_cidr → reject`。
+
+**代价**：有兜底规则时每个请求多一次域名解析（仅当域名未被其它规则命中）；router 变成一个
+常驻组件，"没配路由"不再是"没有 router"。
+
+**为什么不是别的方案**：给 freedom 打补丁要改上游数据面（增加 vendored 补丁面）；
+靠面板表单校验挡不住"管理员直接改数据库/调 API"；靠主机防火墙只能防本机、防不住内网段。
+router 层的规则是内核自己执行的第一跳判定，与协议、与面板、与运维习惯解耦。
+
+### ADR-9 闸门的可观测性视为安全需求
+
+设备数 / 限速挂在 vendored 的 `app/usergate` 上。这条链路有一个很坏的失效模式：
+补丁在某次重 vendor 后没打上，**节点照样启动、连接照样建立、日志照样安静**，
+只是限速和设备数不再生效——除非有人手工去连一堆设备验证。
+
+**决策**：`usergate.Limit` 在给链路套令牌桶之前先把链路登记进 `activeConns`，
+读端收到 EOF/错误或写端出错时减一（`connFlag.once` 保证只减一次）。
+`ActiveConns()` 同时暴露到 `/metrics`（`xboard_core_active_conns`）与面板上报
+（`metrics.active_connections`）。补丁失效时这个数字恒为 0，可以被监控直接抓到。
+
+**不做的事**：不把它做成"精确的在线用户数"。UDP/UoT 会复用链路，语义是"当前托管的链路数"，
+这一点在 `SECURITY.md` §6 里写明了。
+
 ## 3. 代码地图
 
 ```
